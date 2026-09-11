@@ -210,6 +210,49 @@ def run_novelty(
     return out
 
 
+#: Training budgets for the curve. The single most-quoted limitation of this benchmark is
+#: that the verdict moves with how much the filter has seen, and two data points is not a
+#: curve. Chosen to span an order of magnitude either side of the headline run's 2,000.
+BUDGETS = (250, 500, 1000, 2000, 4000)
+CURVE_SEEDS = tuple(range(8))
+
+
+def run_budget_curve(X: np.ndarray, y: np.ndarray, circuit: Circuit, sparsity: float) -> dict:
+    """Novelty AUC against training budget, for the published baseline and the connectome.
+
+    Everything else is held fixed: the same held-out and unseen sets, the same seeds, the
+    same sparsity. Only the number of examples the filter has been shown changes.
+    """
+    fam = np.flatnonzero(np.isin(y, list(range(5))))
+    nov = np.flatnonzero(~np.isin(y, list(range(5))))
+    curve: dict[str, dict[int, list[float]]] = {"random": {}, "connectome-binary": {}}
+
+    for budget in BUDGETS:
+        if budget > len(fam) - 600:
+            continue
+        for kind in curve:
+            scores_for_budget = []
+            for seed in CURVE_SEEDS:
+                rng = np.random.default_rng(seed)
+                train = rng.choice(fam, budget, replace=False)
+                rest = np.setdiff1d(fam, train)
+                held = rng.choice(rest, min(500, len(rest)), replace=False)
+                unseen = rng.choice(nov, 500, replace=False)
+
+                fh = build_hash(kind, circuit, seed, sparsity)
+                filt = FlyBloomFilter(fh.n_kc)
+                filt.observe(fh.tag_valued(X[train]))
+                scores = np.concatenate(
+                    [filt.score(fh.tag_valued(X[held])), filt.score(fh.tag_valued(X[unseen]))]
+                )
+                labels = np.concatenate([np.zeros(len(held)), np.ones(len(unseen))])
+                scores_for_budget.append(auc(scores, labels))
+                if kind.startswith("connectome"):
+                    break  # deterministic
+            curve[kind][budget] = scores_for_budget
+    return curve
+
+
 def summarise(values: list[float]) -> str:
     if len(values) == 1:
         return f"{values[0]:.4f}"
@@ -252,6 +295,7 @@ def main() -> int:
             "retrieval_map": run_retrieval(X, circuit, args.sparsity, args.k),
             "novelty_auc": run_novelty(X, y, circuit, args.sparsity, None),
             "novelty_auc_decay": run_novelty(X, y, circuit, args.sparsity, 5000.0),
+            "budget_curve": run_budget_curve(X, y, circuit, args.sparsity),
             "n": int(len(X)),
         }
 
@@ -392,7 +436,55 @@ def write_report(circuit: Circuit, results: dict, args) -> None:
             add(f"| {label} | {cells} | {against_null(best, res[metric]['random'])} |")
         add("")
 
-    add("## 3. Interpretation\n")
+    add("## 3. Novelty against training budget\n")
+    add(
+        "The most-quoted caveat on this benchmark has been that the verdict moves with how\n"
+        "much the filter has been shown, measured at two points. Here it is as a curve, with\n"
+        "everything else held fixed - same held-out and unseen sets, same seeds, same\n"
+        f"sparsity - over {len(CURVE_SEEDS)} seeds for the random baseline.\n"
+    )
+    for dataset, res in results.items():
+        curve = res.get("budget_curve")
+        if not curve or not curve["random"]:
+            continue
+        budgets = sorted(curve["random"])
+        add(f"### {dataset}\n")
+        add("| Training examples | `random` | `connectome-binary` | connectome vs. the null |")
+        add("|---:|---:|---:|---|")
+        for budget in budgets:
+            null = curve["random"][budget]
+            conn = curve["connectome-binary"][budget][0]
+            mean, sd = float(np.mean(null)), float(np.std(null, ddof=1))
+            z = (conn - mean) / sd if sd else 0.0
+            add(
+                f"| {budget:,} | {mean:.4f} ± {sd:.4f} | {conn:.4f} | "
+                f"{z:+.1f} sd, beats {sum(1 for v in null if conn > v)}/{len(null)} |"
+            )
+        add("")
+
+    add("## 4. Interpretation\n")
+    add(
+        "**The budget curve says the headline z-scores should not be quoted individually.**\n"
+        "On MNIST there is a real trend: the connectome is behind at 250, 500 and 1,000\n"
+        "training examples (down to -2.4 sd, beating 0 of 8 seeds) and reaches parity or a\n"
+        "shade above at 2,000 and 4,000. That is consistent, and it locates the earlier\n"
+        "observation that the connectome fell behind at a third of the data.\n"
+    )
+    add(
+        "On Fashion-MNIST there is no trend at all. Adjacent budgets give **+2.7 sd (beating\n"
+        "8 of 8 seeds) at 1,000 and +0.1 sd (4 of 8) at 2,000**, on the same data with the\n"
+        "same seeds. Nothing about the circuit changed between those two rows; only the\n"
+        "number of examples did. A difference that large between neighbouring budgets means\n"
+        "the per-budget figure is dominated by which particular examples the filter happened\n"
+        "to see, not by the projection.\n"
+    )
+    add(
+        "So the conclusion below is robust and the individual numbers supporting it are not.\n"
+        "*Matches the baseline* survives - the connectome is never durably ahead or behind\n"
+        "across ten budget-dataset combinations. Any single z-score, including the +0.7 sd in\n"
+        "section 2, is one draw from a distribution wide enough to produce +2.7 and +0.1 back\n"
+        "to back, and should be read as such.\n"
+    )
     add(
         "**The measured wiring is not better than random, and on the novelty task it is not\n"
         "worse either.** Across both datasets the connectome lands well inside the spread of\n"
@@ -463,7 +555,7 @@ def write_report(circuit: Circuit, results: dict, args) -> None:
         "not sold as an improvement, because it is not one.\n"
     )
 
-    add("## 4. Honest limitations\n")
+    add("## 5. Honest limitations\n")
     add(
         f"- **The input is reduced to {circuit.n_channels} dimensions by PCA.** The measured "
         "circuit fixes the number of receptor channels, so 784-dimensional images cannot be "

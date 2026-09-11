@@ -1,18 +1,153 @@
 # Every threshold in this project cites a paper or a measurement. None is tuned by hand
 # against an evaluation set, because tuning against the eval set invalidates the eval set.
 #
-# Empty until M3 produces the first measured values. Each entry, when added, carries:
-#
-#   value:    the number
-#   source:   "paper" or "measurement"
-#   cite:     the paper and page, or the report and the run that measured it
-#   rationale: why this number and not a neighbouring one
-#
-# Published reference values that M3 will measure against, recorded here so the comparison
-# is fixed before the measurement rather than after it:
-#
-#   orn_types: 50      Dasgupta, Stevens & Navlakha, Science 2017
-#   kenyon_cells: 2000 Dasgupta, Stevens & Navlakha, Science 2017
-#   tag_sparsity: 0.05 Dasgupta, Stevens & Navlakha, Science 2017 (~95% zeros)
+# Each entry carries:
+#   value      the number as used in the code
+#   where      the symbol it lives at
+#   source     "paper" | "measurement" | "domain"
+#   cite       the paper, or the report and run that measured it
+#   rationale  why this number and not a neighbouring one
 
-thresholds: {}
+published:
+  orn_channels:
+    value: 50
+    source: paper
+    cite: "Dasgupta, Stevens & Navlakha, Science 358(6364):793-796, 2017"
+    measured: 55
+    rationale: >
+      The model assumes ~50 receptor channels. MaleCNS measures 55 antennal lobe glomeruli
+      in the right hemisphere. The measured number is used; the published one is the
+      comparison. See reports/m3-flyhash-benchmark.md section 1.
+
+  kenyon_cells:
+    value: 2000
+    source: paper
+    cite: "Dasgupta, Stevens & Navlakha, Science 2017"
+    measured: 2045
+    rationale: "Measured 2,045 in the right hemisphere; 154 of them receive no PN input."
+
+  tag_sparsity:
+    value: 0.05
+    where: "flypaper.rank.score.DEFAULTS['sparsity']"
+    source: paper
+    cite: "Dasgupta, Stevens & Navlakha, Science 2017 - ~95% of the tag is zero"
+    rationale: "Used unchanged. bench/test_flyhash_vs_random.py asserts the measured sparsity."
+
+  pn_to_kc_fan_in:
+    value: 6
+    where: "flypaper.rank.score.DEFAULTS['fan_in']"
+    source: paper
+    cite: "Dasgupta, Stevens & Navlakha, Science 2017"
+    measured: 5.38
+    rationale: >
+      The published model uses a uniform fan-in of 6. The measured distribution is 1-29
+      with mean 5.38, which is why the benchmark includes a degree-preserving null.
+
+encoder:
+  size_noise_floor:
+    value: 0.02
+    where: "flypaper.encode.channels - rel_floor on the size z-channels"
+    source: domain
+    rationale: >
+      A z-score needs a noise floor or it amplifies noise without bound: a near-constant
+      quantity has near-zero standard deviation, so any jitter fills the channel's range.
+      2% of the running mean is the stated domain claim that a page whose size moves by
+      less than that has not changed - comfortably above a rotating token's few bytes on a
+      thousand-byte page, and far below any real difference. Not fitted.
+
+  time_noise_floor:
+    value: 0.5
+    where: "flypaper.encode.channels - rel_floor on time.z"
+    source: domain
+    rationale: >
+      Response time is the noisiest field available: scheduling, connection reuse and the
+      target's own load move it more than anything of interest. Before this floor existed,
+      time.z alone carried a within-cluster standard deviation of 0.12 on a cluster whose
+      total variance should have been near zero (reports/m2-encoder.md section 3).
+
+gate:
+  separation_ratio:
+    value: 4.0
+    where: "bench/test_encoder_invariance.py GATE_RATIO"
+    source: measurement
+    cite: "reports/m2-encoder.md"
+    rationale: >
+      A labelled hit must sit in a neighbourhood at least 4x emptier than the typical noise
+      point's. Carried over unchanged when the metric was replaced (centroid-based ->
+      k-nearest-neighbour), specifically so the change could not be mistaken for tuning.
+      Under it the default channel set clears 7 of 7 surfaces and the two alternatives clear
+      4 each.
+
+  knn_k:
+    value: 10
+    where: "bench/separation.py DEFAULT_K"
+    source: domain
+    rationale: >
+      Large enough that a single duplicate response does not define a neighbourhood, small
+      enough to stay local when the smallest noise population on bench-mixed has ~190
+      members and is sampled down to ~70.
+
+ranking:
+  display_percentile:
+    value: 99.5
+    where: "flypaper.rank.report.RollingPercentile"
+    source: measurement
+    cite: "reports/m4-vs-manual-filters.md"
+    rationale: >
+      A review budget, not a novelty standard. A fixed absolute cutoff cannot work: baseline
+      noise sits at 0.000 on every surface measured while the weakest genuine hit ranges from
+      0.001 to 0.318 across them, so any constant either drowns one target or silences
+      another.
+
+  warmup:
+    value: 50
+    where: "flypaper.cli - fly rank --warmup"
+    source: measurement
+    cite: "reports/live-targets.md section 2"
+    rationale: >
+      The cold start is a fixed cost of roughly the first fifty responses - negligible on a
+      10,000-word scan and overwhelming on a 146-request one, where it put the first word of
+      the wordlist at the top of the ranking on all three real hosts measured.
+
+  learning_rate:
+    value: 0.4
+    where: "flypaper.rank.score.DEFAULTS['learning_rate']"
+    source: paper
+    cite: "Dasgupta, Sheehan, Stevens & Navlakha, PNAS 115(51):13093, 2018"
+    rationale: >
+      Depression proportional to activation, as in the paper, with the activation folded
+      into observe(). Not swept.
+
+safety:
+  stage_two_max_rate:
+    value: 5.0
+    where: "flypaper.stage2.refetch.MAX_RATE"
+    source: domain
+    rationale: >
+      Stage two is a handful of confirmations, not a second scan. In the code rather than a
+      flag because a flag is too easy to get wrong.
+
+  live_capture_rate:
+    value: 10
+    where: "bench/live_probe.py MAX_RATE"
+    source: domain
+    rationale: "Polite for a third-party host, and slow enough to notice a target objecting."
+
+  live_capture_requests:
+    value: 250
+    where: "bench/live_probe.py MAX_REQUESTS"
+    source: measurement
+    cite: "bench/corpus/provenance.md"
+    rationale: >
+      A rate ceiling is not a volume ceiling. A capture at 10/s still tripped a host's edge
+      protection after 200 seconds of it, because volume is a separate axis. This ceiling
+      exists because that happened.
+
+  block_refusal_jump:
+    value: 0.5
+    where: "bench/live_probe.py REFUSAL_JUMP"
+    source: domain
+    rationale: >
+      Half of a 25-response window newly refusing, against the run's own opening baseline.
+      One-sided on purpose: a host that refuses from the first request has not changed its
+      mind, and aborting would discard a scan that is still rankable.
