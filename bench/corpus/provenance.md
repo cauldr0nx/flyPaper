@@ -72,6 +72,7 @@ sending the traffic again.
 | `-ac` comparison run on the same API host | same basis; ffuf's own autocalibration, for the side-by-side in the report | 146 | 10/s | No |
 
 | Public program C, 3 hosts | same basis; picked for a soft-404 signature, which turned out to be a WAF refusing the scanner | 438 | 10/s | No |
+| Stage two, program C | `fly taste` top 8 at 1/s, same generated scope file; first stage-two run against anything but loopback | 8 | 1/s | No |
 | Client-fingerprint probes | ~15 single requests isolating why ffuf saw a different site than curl | ~15 | manual | No |
 
 Candidate hosts were classified with three requests each (root plus two paths that cannot

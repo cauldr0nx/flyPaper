@@ -154,7 +154,46 @@ described a site that the scanner was never going to see.
 
 The single-page-app case therefore remains untested. It was not reached.
 
-## 5. What this does and does not establish
+## 5. Stage two, for the first time on a real target - and it disconfirmed stage one
+
+Stage two re-fetches the top candidates, and until now it had only ever run against
+loopback. Pointed at the walled host's own capture, with the same generated scope file, top
+8 at 1 request per second:
+
+```
+stage1 novelty 0.931  ->  stage2 [200 1749b]  title 'Support | MacPaw Accounts'
+stage1 novelty 0.010  ->  stage2 [200 1749b]  title 'Support | MacPaw Accounts'
+stage1 novelty 0.010  ->  stage2 [200 1749b]  title 'Support | MacPaw Accounts'
+  ... all 8 identical: 1,749 bytes, 25 tags, one distinct title, entropy 5.2109-5.2201
+```
+
+Two things happened here that are worth separating.
+
+**Stage two reached the application that stage one could not.** It is built on
+`python-requests`, and that client is not refused where the Go fuzzer is. So the two stages
+saw different sites: `403` for stage one, `200` for stage two, same paths, minutes apart.
+This is accidental - nothing designed it - but it is a real property of the architecture
+worth knowing, and it means stage two can be the only thing that sees a WAF-walled target at
+all.
+
+**And stage two disconfirmed stage one's ranking.** The item stage one ranked first at 0.931
+is, once fetched, the same 1,749-byte shell as the seven items it ranked at 0.010 and 0.000.
+Identical length, identical title, identical tag count, entropy varying in the fourth decimal.
+`shared_title` flagged all 8 as the host's furniture, which is what it is for.
+
+Stage one was not wrong to rank it first - it was the only response the refuser let through,
+and that is a real difference in the metadata. It was just a difference about the WAF. Stage
+two is what established that, in eight requests, which is the entire argument for having two
+stages.
+
+**This is also the single-page-app case, reached from the other side.** The shell that
+defeats the encoder by construction is right there: every candidate 200, identical size,
+identical words, identical lines. Stage one could not have separated them and did not
+pretend to. Body features barely separate them either - a standard deviation of 0.003 in
+entropy across eight pages is not a signal. What would separate them is what the shell
+*loads*, which needs a rendered page, and nothing here does that.
+
+## 6. What this does and does not establish
 
 **Does:** the encoder collapses a real 404 wall into a familiar cluster, across three hosts
 with very different response shapes, with no configuration. The ranker then puts the
@@ -173,7 +212,7 @@ now reports the offline ranking as well as the live one, and the dashboard alrea
 suppresses the first fifty. Anyone reading a live ranking on a short scan is reading noise
 at the top, and the tool should say so more loudly than it does.
 
-## 6. Limitations
+## 7. Limitations
 
 - **Three hosts, one program, 438 requests.** This is a demonstration, not a survey.
 - **No labels.** There is no ground truth on a real target, so there is no precision figure
@@ -182,7 +221,7 @@ at the top, and the tool should say so more loudly than it does.
 - **Short wordlist, meaningful words only.** A real content-discovery run uses tens of
   thousands of words, most of them junk, and the familiar cluster would be far denser. That
   should help the ranker, and it is untested.
-- **Seven hosts across three programs, 1,022 requests.** Three conventional front ends and one API. A
+- **Seven hosts across three programs; 1,022 stage-one requests and 8 stage-two.** Three conventional front ends and one API. A
   single-page app that returns 200 and the same HTML shell to every path is still untested,
   and is the case most likely to defeat the encoder, since status, size, words and lines
   would all be constant and only the body differs - which stage one never sees. That is
