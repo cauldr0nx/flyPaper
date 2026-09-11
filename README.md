@@ -85,6 +85,16 @@ field in advance.
 ## Install
 
 ```bash
+uv tool install git+https://github.com/cauldr0nx/flyPaper     # or: pipx install
+fly --version
+```
+
+Pure Python, no build step, and nothing it needs at runtime beyond numpy and scipy. The
+MaleCNS tables are only needed from M3 onward and the tool runs without them.
+
+To work on it:
+
+```bash
 uv venv && uv pip install -e ".[dev]"
 make ci          # ruff + pytest, offline, no dataset required
 ```
