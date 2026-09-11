@@ -57,6 +57,15 @@ input-word character profile — one of the candidate encodings — turned out t
 the within-cluster variance and destroy exactly the collapse the tool depends on, because the
 fuzzed word differs on every request by construction.
 
+**It behaves the same on real targets.** Seven hosts across three public bug bounty
+programs, 1,022 requests ([reports/live-targets.md](reports/live-targets.md)). The encoder
+collapsed 404 walls of 21 b, 13 kB and 33 kB with no configuration and put the structurally
+distinct responses on top. On an API whose 404 body quotes the path back — so no two
+responses are the same size — the size filter an operator would reach for first leaves 122
+of 146 responses to read, while `-ac` and flypaper both leave the same 4. `-ac` was not
+beaten on any target, synthetic or real; what flypaper removes is having to pick the right
+field in advance.
+
 ## Install
 
 ```bash
@@ -83,6 +92,9 @@ fly taste results.json --scope scope.txt --top 10 --rate 1
 
 # parse only, no scoring
 fly ingest --file results.json
+
+# turn a program's published scope table into a scope file, without widening it
+fly scope program-scope.csv --out scope.txt
 
 fly baselines            # what is stored, and how stale
 ```
