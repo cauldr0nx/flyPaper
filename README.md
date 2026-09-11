@@ -34,6 +34,10 @@ up in `reports/` and stopped on, never loosened by moving the threshold.
 | M6 | Ergonomics | passed — [reports/m6-ergonomics.md](reports/m6-ergonomics.md) |
 | M7 | Adaptive foraging, delayed reward | not started |
 
+Two benchmarks sit outside the milestone sequence:
+[reports/decay.md](reports/decay.md) measures whether temporal decay is worth having, and
+[reports/live-targets.md](reports/live-targets.md) runs the whole thing against real hosts.
+
 ### What the measurements actually said
 
 **The connectome does not beat random projection.** Wired from the measured MaleCNS
