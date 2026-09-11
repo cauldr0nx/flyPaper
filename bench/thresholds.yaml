@@ -109,6 +109,28 @@ ranking:
       10,000-word scan and overwhelming on a 146-request one, where it put the first word of
       the wordlist at the top of the ranking on all three real hosts measured.
 
+  default_top:
+    value: 25
+    where: "flypaper.cli.DEFAULT_TOP"
+    source: domain
+    rationale: >
+      How many results `fly rank <file>` prints when not told otherwise. A completed file is
+      already sorted, so a review budget is the useful default; a percentile gate can
+      legitimately pass nothing, and "0 of 1592" is a bad answer to "show me this scan".
+      That happens for real with --per, where every partition calibrates its own gate and an
+      early hit in a partition arrives before it has.
+
+  min_partition_observations:
+    value: 25
+    where: "flypaper.rank.score.PartitionedRanker.min_observations"
+    source: measurement
+    cite: "reports/partitioned.md"
+    rationale: >
+      A host or directory seen fewer times than this has no baseline, so everything in it
+      looks novel. Found immediately on a real scan: `--per dir` with a wordlist containing
+      slashes produced partitions of one response each, every one scoring 1.000. Such
+      partitions are scored and learned from but never surfaced.
+
   learning_rate:
     value: 0.4
     where: "flypaper.rank.score.DEFAULTS['learning_rate']"

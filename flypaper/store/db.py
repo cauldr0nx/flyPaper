@@ -29,7 +29,7 @@ from flypaper import __version__
 
 __all__ = ["Baseline", "BaselineMismatch", "Store", "open_db"]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -37,7 +37,11 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS baselines (
-    name           TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    -- One row per partition. A sweep across fifty hosts keeps fifty baselines under one
+    -- name; an unpartitioned run keeps one row with an empty partition. Both are the same
+    -- shape, so nothing downstream has to care which it is reading.
+    partition      TEXT NOT NULL DEFAULT '',
     channel_set    TEXT NOT NULL,
     projection     TEXT NOT NULL,
     seed           INTEGER,
@@ -51,7 +55,8 @@ CREATE TABLE IF NOT EXISTS baselines (
     updated_utc    REAL NOT NULL,
     weights        BLOB NOT NULL,
     last_seen      BLOB NOT NULL,
-    notes          TEXT NOT NULL DEFAULT ''
+    notes          TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (name, partition)
 );
 """
 
@@ -77,6 +82,7 @@ class Baseline:
     weights: np.ndarray
     last_seen: np.ndarray
     notes: str = ""
+    partition: str = ""
 
     @property
     def age_seconds(self) -> float:
@@ -123,50 +129,69 @@ class Store:
         self.close()
 
     def names(self) -> list[str]:
-        return [r[0] for r in self._conn.execute("SELECT name FROM baselines ORDER BY name")]
+        return [
+            r[0] for r in self._conn.execute("SELECT DISTINCT name FROM baselines ORDER BY name")
+        ]
+
+    def partitions(self, name: str) -> list[str]:
+        return [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT partition FROM baselines WHERE name=? ORDER BY partition", (name,)
+            )
+        ]
 
     def save(self, name: str, ranker, *, notes: str = "") -> None:
-        """Persist a ranker's filter as a named baseline, replacing any previous one."""
+        """Persist a ranker's filter(s) as a named baseline, replacing any previous one.
+
+        A partitioned ranker writes one row per partition under the same name, so a weekly
+        sweep across fifty hosts keeps fifty baselines that each age on their own.
+        """
+        filters = getattr(ranker, "filters", None)
+        if filters is None:
+            filters = {"": ranker.filter}
+
         now = time.time()
-        created = now
-        row = self._conn.execute(
-            "SELECT created_utc FROM baselines WHERE name=?", (name,)
-        ).fetchone()
-        if row:
-            created = float(row[0])
-        self._conn.execute(
-            """INSERT OR REPLACE INTO baselines
-               (name, channel_set, projection, seed, n_kc, sparsity, learning_rate,
-                decay_halflife, time_base, n_observed, created_utc, updated_utc, weights,
-                last_seen, notes)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                name,
-                ranker.channel_set,
-                ranker.projection,
-                ranker.seed,
-                int(ranker.flyhash.n_kc),
-                float(ranker.sparsity),
-                float(ranker.learning_rate),
-                ranker.decay_halflife,
-                ranker.time_base,
-                int(ranker.filter.n_observed),
-                created,
-                now,
-                ranker.filter.weights.astype(np.float64).tobytes(),
-                ranker.filter.last_seen.astype(np.float64).tobytes(),
-                notes or f"flypaper {__version__}",
-            ),
-        )
+        for partition, filt in filters.items():
+            row = self._conn.execute(
+                "SELECT created_utc FROM baselines WHERE name=? AND partition=?",
+                (name, partition),
+            ).fetchone()
+            created = float(row[0]) if row else now
+            self._conn.execute(
+                """INSERT OR REPLACE INTO baselines
+                   (name, partition, channel_set, projection, seed, n_kc, sparsity,
+                    learning_rate, decay_halflife, time_base, n_observed, created_utc,
+                    updated_utc, weights, last_seen, notes)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    name,
+                    partition,
+                    ranker.channel_set,
+                    ranker.projection,
+                    ranker.seed,
+                    int(ranker.flyhash.n_kc),
+                    float(ranker.sparsity),
+                    float(ranker.learning_rate),
+                    ranker.decay_halflife,
+                    ranker.time_base,
+                    int(filt.n_observed),
+                    created,
+                    now,
+                    filt.weights.astype(np.float64).tobytes(),
+                    filt.last_seen.astype(np.float64).tobytes(),
+                    notes or f"flypaper {__version__}",
+                ),
+            )
         self._conn.commit()
 
-    def load(self, name: str) -> Baseline:
+    def load(self, name: str, partition: str = "") -> Baseline:
         row = self._conn.execute(
             """SELECT name, channel_set, projection, seed, n_kc, sparsity, learning_rate,
                       decay_halflife, time_base, n_observed, created_utc, updated_utc,
-                      weights, last_seen, notes
-               FROM baselines WHERE name=?""",
-            (name,),
+                      weights, last_seen, notes, partition
+               FROM baselines WHERE name=? AND partition=?""",
+            (name, partition),
         ).fetchone()
         if row is None:
             known = ", ".join(self.names()) or "(none)"
@@ -187,16 +212,29 @@ class Store:
             weights=np.frombuffer(row[12], dtype=np.float64).copy(),
             last_seen=np.frombuffer(row[13], dtype=np.float64).copy(),
             notes=row[14],
+            partition=row[15],
         )
 
-    def restore_into(self, name: str, ranker) -> Baseline:
-        """Load a baseline into a ranker, refusing anything that would make it meaningless.
+    def restore_all_into(self, name: str, ranker) -> list[Baseline]:
+        """Restore every partition of a named baseline into a partitioned ranker.
 
-        Every check here is an error and not a warning. A baseline restored under the wrong
-        channel set or the wrong projection would produce numbers that look fine and mean
-        nothing, which is worse than a crash.
+        Partitions the ranker has not seen yet are created, so a host scanned last week is
+        already familiar the moment its first response of this week arrives - which is the
+        entire point of persisting them separately.
         """
-        baseline = self.load(name)
+        restored = []
+        for partition in self.partitions(name):
+            baseline = self.load(name, partition)
+            self._check(name, baseline, ranker)
+            encoder_filter = ranker._for(partition)[1]
+            encoder_filter.weights = baseline.weights.copy()
+            encoder_filter.last_seen = baseline.last_seen.copy()
+            encoder_filter.n_observed = baseline.n_observed
+            ranker.counts[partition] = baseline.n_observed
+            restored.append(baseline)
+        return restored
+
+    def _check(self, name: str, baseline: Baseline, ranker) -> None:
         problems = []
         if baseline.channel_set != ranker.channel_set:
             problems.append(
@@ -218,19 +256,32 @@ class Store:
                 f"last-seen stamps are on a different scale, so decay would be nonsense"
             )
         if problems:
+            where = f" partition {baseline.partition!r}" if baseline.partition else ""
             raise BaselineMismatch(
-                f"baseline {name!r} cannot be used here:\n  - " + "\n  - ".join(problems)
+                f"baseline {name!r}{where} cannot be used here:\n  - " + "\n  - ".join(problems)
             )
+
+    def restore_into(self, name: str, ranker) -> Baseline:
+        """Load a baseline into a ranker, refusing anything that would make it meaningless.
+
+        Every check here is an error and not a warning. A baseline restored under the wrong
+        channel set or the wrong projection would produce numbers that look fine and mean
+        nothing, which is worse than a crash.
+        """
+        baseline = self.load(name)
+        self._check(name, baseline, ranker)
 
         ranker.filter.weights = baseline.weights.copy()
         ranker.filter.last_seen = baseline.last_seen.copy()
         ranker.filter.n_observed = baseline.n_observed
         return baseline
 
-    def describe(self, name: str) -> dict:
-        b = self.load(name)
+    def describe(self, name: str, partition: str = "") -> dict:
+        b = self.load(name, partition)
         return {
             "name": b.name,
+            "partition": b.partition,
+            "partitions": len(self.partitions(name)),
             "channel_set": b.channel_set,
             "projection": b.projection,
             "seed": b.seed,

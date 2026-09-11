@@ -109,6 +109,9 @@ fly rank results.json --top 20
 # against a saved baseline, so a second scan of the same target is not novel again
 fly rank results.json --baseline acme --decay-halflife 604800
 
+# a weekly sweep: one saved baseline per host, each ageing on its own
+fly rank results.json --per host --baseline acme --decay-halflife 604800
+
 # stage two: re-fetch the most novel candidates, scope-gated and slow
 fly taste results.json --scope scope.txt --top 10 --rate 1
 

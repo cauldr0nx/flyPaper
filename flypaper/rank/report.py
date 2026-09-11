@@ -155,12 +155,13 @@ class Terminal:
     def _paint(self, text: str, colour: str) -> str:
         return f"{colour}{text}{_RESET}" if self.colour else text
 
-    def header(self, channel_set: str, projection: str) -> None:
-        cut = (
-            f"novelty >= {self.threshold:.2f}"
-            if self.threshold is not None
-            else f"top {100 - self.percentile:g}% most novel for this target"
-        )
+    def header(self, channel_set: str, projection: str, budget: int | None = None) -> None:
+        if budget:
+            cut = f"top {budget} by novelty"
+        elif self.threshold is not None:
+            cut = f"novelty >= {self.threshold:.2f}"
+        else:
+            cut = f"top {100 - self.percentile:g}% most novel for this target"
         print(
             f"flypaper: ranking by novelty  [channels {channel_set}, projection "
             f"{projection}, showing {cut}]\n"

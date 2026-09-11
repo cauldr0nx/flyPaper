@@ -179,3 +179,62 @@ def test_connectome_projection_is_refused_when_partitioning():
     """Partitions share one projection; the connectome path builds its own."""
     with pytest.raises(ValueError, match="random projection"):
         PartitionedRanker(how="host", projection="connectome")
+
+
+# --- partitioned baselines persist, one row per partition ---------------------------------------
+
+
+def test_partitions_persist_and_restore_separately(tmp_path):
+    """The two headline features have to compose: a weekly sweep across fifty hosts keeps
+    fifty baselines that each age on their own."""
+    import numpy as np
+
+    from flypaper.store.db import Store
+
+    ranker = PartitionedRanker(how="host", time_base="wallclock", min_observations=1)
+    for r in two_hosts(200):
+        ranker.score(r)
+
+    db = tmp_path / "b.sqlite3"
+    with Store(db) as store:
+        store.save("sweep", ranker)
+        assert sorted(store.partitions("sweep")) == ["big.example.com", "small.example.com"]
+
+        restored = PartitionedRanker(how="host", time_base="wallclock", min_observations=1)
+        got = store.restore_all_into("sweep", restored)
+
+    assert len(got) == 2
+    assert restored.partitions == 2
+    for key, filt in ranker.filters.items():
+        assert np.allclose(filt.weights, restored.filters[key].weights)
+
+
+def test_a_restored_partition_makes_that_host_familiar(tmp_path):
+    from flypaper.store.db import Store
+
+    db = tmp_path / "b.sqlite3"
+    first = PartitionedRanker(how="host", time_base="wallclock", min_observations=1)
+    for r in two_hosts(200):
+        first.score(r)
+    with Store(db) as store:
+        store.save("sweep", first)
+        second = PartitionedRanker(how="host", time_base="wallclock", min_observations=1)
+        store.restore_all_into("sweep", second)
+        fresh = PartitionedRanker(how="host", time_base="wallclock", min_observations=1)
+
+    probe = response("small.example.com", "w7", 121)
+    assert second.score(probe).novelty < fresh.score(probe).novelty
+
+
+def test_a_mismatched_partitioned_baseline_is_refused(tmp_path):
+    from flypaper.store.db import BaselineMismatch, Store
+
+    db = tmp_path / "b.sqlite3"
+    ranker = PartitionedRanker(how="host", time_base="wallclock", min_observations=1, seed=0)
+    for r in two_hosts(60):
+        ranker.score(r)
+    with Store(db) as store:
+        store.save("sweep", ranker)
+        wrong = PartitionedRanker(how="host", time_base="wallclock", min_observations=1, seed=7)
+        with pytest.raises(BaselineMismatch, match="seed"):
+            store.restore_all_into("sweep", wrong)

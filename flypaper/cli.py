@@ -107,10 +107,14 @@ def cmd_rank(args: argparse.Namespace) -> int:
             percentile=args.percentile,
             partitioned=args.per != "none",
         )
-        term.header(args.channel_set, args.projection)
-        if args.top:
-            # An explicit budget is a request for that many results, not a second filter.
-            for item in scored[: args.top]:
+        # A completed file is already sorted, so a review budget is the useful default: a
+        # percentile gate can legitimately pass nothing, and "0 of 1592" is a bad answer to
+        # "show me this scan". It happens for real with --per, where every partition has to
+        # calibrate its own gate and an early hit in a partition arrives before it has.
+        budget = args.top if args.top is not None else DEFAULT_TOP
+        term.header(args.channel_set, args.projection, budget=budget)
+        if budget:
+            for item in scored[:budget]:
                 term.result(item, force=True)
         else:
             for item in scored:
@@ -225,15 +229,31 @@ def _rank_with_baseline(args, source, kwargs) -> int:
     is how many responses have gone past; across scans it is wall-clock, so a baseline built
     six months ago is six months stale rather than 1,998 records stale.
     """
+    from flypaper.rank.health import StreamHealth
     from flypaper.rank.report import Terminal
-    from flypaper.rank.score import Ranker
+    from flypaper.rank.score import PartitionedRanker, Ranker
     from flypaper.store.db import Store
 
     # Across scans, elapsed time is wall-clock. Within one it is how much else went past.
-    ranker = Ranker(time_base="wallclock", **kwargs)
+    partitioned = args.per != "none"
+    if partitioned:
+        ranker = PartitionedRanker(how=args.per, time_base="wallclock", **kwargs)
+    else:
+        ranker = Ranker(time_base="wallclock", **kwargs)
+    health = StreamHealth()
+
     with Store(args.db) as store:
-        existing = None
-        if args.baseline in store.names():
+        known = args.baseline in store.names()
+        if known and partitioned:
+            restored = store.restore_all_into(args.baseline, ranker)
+            if restored:
+                oldest = max(b.age_seconds for b in restored) / 86400.0
+                print(
+                    f"flypaper: baseline {args.baseline!r} restored - {len(restored)} "
+                    f"{args.per} partitions, oldest {oldest:.1f} days.",
+                    file=sys.stderr,
+                )
+        elif known:
             existing = store.restore_into(args.baseline, ranker)
             age_days = existing.age_seconds / 86400.0
             print(
@@ -251,25 +271,40 @@ def _rank_with_baseline(args, source, kwargs) -> int:
         term = None
         if not args.jsonl:
             term = Terminal(
-                threshold=args.threshold, percentile=args.percentile, warmup=args.warmup
+                threshold=args.threshold,
+                percentile=args.percentile,
+                warmup=args.warmup,
+                partitioned=partitioned,
             )
             term.header(args.channel_set, args.projection)
 
+        shown_before = 0
         for item in ranker.stream(source):
             if term is not None:
                 term.result(item)
+                health.observe(
+                    item.result, surfaced=term.shown > shown_before, partition=item.partition
+                )
+                shown_before = term.shown
             else:
                 print(json.dumps(item.as_dict(), ensure_ascii=False))
+                health.observe(item.result, partition=item.partition)
         if term is not None:
             term.footer(ranker.saturation)
 
         if not args.no_update:
             store.save(args.baseline, ranker)
+            where = (
+                f"{ranker.partitions} {args.per} partitions"
+                if partitioned
+                else f"{ranker.filter.n_observed} responses"
+            )
             print(
-                f"flypaper: baseline {args.baseline!r} updated "
-                f"({ranker.filter.n_observed} responses, {ranker.saturation:.0%} saturated).",
+                f"flypaper: baseline {args.baseline!r} updated ({where}, "
+                f"{ranker.saturation:.0%} saturated).",
                 file=sys.stderr,
             )
+    _report_health(health)
     return 0
 
 
@@ -286,10 +321,12 @@ def cmd_baselines(args: argparse.Namespace) -> int:
             print(json.dumps(store.describe(args.name), indent=2))
             return 0
         for name in names:
-            d = store.describe(name)
+            parts = store.partitions(name)
+            d = store.describe(name, parts[0] if parts else "")
+            scope = f"{len(parts)} partitions" if len(parts) > 1 or parts[0] else "unpartitioned"
             print(
                 f"{d['name']:24} {d['channel_set']:12} {d['projection']:11} "
-                f"{d['n_observed']:>8} responses  {d['saturation']:>6.1%} saturated  "
+                f"{scope:>16}  {d['saturation']:>6.1%} saturated  "
                 f"{d['age_seconds'] / 86400:.1f}d old"
             )
     return 0
@@ -326,6 +363,11 @@ def cmd_scope(args: argparse.Namespace) -> int:
         for pattern in report.patterns:
             print(pattern)
     return 0
+
+
+#: How many results `fly rank <file>` shows when not told otherwise. A review budget,
+#: chosen to fit on a screen.
+DEFAULT_TOP = 25
 
 
 def _report_health(health) -> None:
@@ -455,7 +497,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=10.0,
         help="with --follow, stop after this many seconds without a new result",
     )
-    ranker.add_argument("--top", type=int, default=None, help="print at most this many results")
+    ranker.add_argument(
+        "--top",
+        type=int,
+        default=None,
+        help=(
+            f"how many results to print. Defaults to {DEFAULT_TOP} for a completed file, "
+            f"which is already sorted; 0 prints everything above the cutoff. Live input is "
+            f"gated by --percentile instead, since there is no 'top' of a stream."
+        ),
+    )
     ranker.add_argument(
         "--per",
         choices=("none", "host", "dir"),
