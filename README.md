@@ -122,7 +122,16 @@ fly baselines            # what is stored, and how stale
 ```
 
 `-mc all` is deliberate: you want every response, including the 404 sea, because the noise
-*is* the baseline. Filtering upstream destroys the thing the filter needs.
+*is* the baseline. Filtering upstream destroys the thing the filter needs — and it fails
+quietly, because the ranking still looks fine. `fly rank` checks the stream and tells you if
+it looks pre-filtered, too short to have learned anything, or if so much of it is surfacing
+that the baseline cannot be describing it.
+
+```bash
+# follow a scan that is still running
+ffuf -mc all -of json -o out.json -u http://host/FUZZ -w list.txt &
+fly rank out.json --follow
+```
 
 There is no novelty threshold to choose. A fixed one cannot work — baseline noise sits at
 0.000 on every surface measured, but the weakest genuine hit ranged from 0.001 to 0.318

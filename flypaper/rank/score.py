@@ -398,6 +398,13 @@ class PartitionedRanker:
         self.n_scored += 1
         return scored
 
+    @property
+    def saturation(self) -> float:
+        """Mean saturation across partitions, for the footer."""
+        if not self.filters:
+            return 0.0
+        return sum(f.saturation for f in self.filters.values()) / len(self.filters)
+
     def summary(self) -> str:
         settled = sum(1 for k in self.filters if self.settled(k))
         return (

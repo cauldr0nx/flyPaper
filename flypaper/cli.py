@@ -64,10 +64,21 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 def cmd_rank(args: argparse.Namespace) -> int:
     """Rank results by novelty. Ranks; does not detect."""
+    from flypaper.rank.health import StreamHealth
     from flypaper.rank.report import Terminal, write_jsonl
     from flypaper.rank.score import Ranker, rank
 
-    source = iter_batch(args.file) if args.file else iter_stdin()
+    if args.file and args.follow:
+        # Followed forever, `fly rank --follow` never exits and the operator has no way to
+        # know the scan finished. Stopping after a quiet period is the pragmatic answer:
+        # ffuf writes continuously while it runs, so silence means it is done.
+        source = iter_tail(args.file, stop_after_idle=args.follow_idle)
+        args.live = True
+    elif args.file:
+        source = iter_batch(args.file)
+    else:
+        source = iter_stdin()
+    health = StreamHealth()
     kwargs = {
         "channel_set": args.channel_set,
         "projection": args.projection,
@@ -85,8 +96,11 @@ def cmd_rank(args: argparse.Namespace) -> int:
 
     if args.file and not args.live:
         scored = rank(source, passes=2, partition=args.per, **kwargs)
+        for item in scored:
+            health.observe(item.result, partition=item.partition)
         if args.jsonl:
             write_jsonl(scored[: args.top] if args.top else scored)
+            _report_health(health)
             return 0
         term = Terminal(
             threshold=args.threshold,
@@ -102,6 +116,7 @@ def cmd_rank(args: argparse.Namespace) -> int:
             for item in scored:
                 term.result(item)
         term.footer(0.0)
+        _report_health(health)
         return 0
 
     # Live: one pass, scoring each result against only what came before it.
@@ -110,13 +125,20 @@ def cmd_rank(args: argparse.Namespace) -> int:
     if not args.jsonl:
         term = Terminal(threshold=args.threshold, percentile=args.percentile, warmup=args.warmup)
         term.header(args.channel_set, args.projection)
+    shown_before = 0
     for item in ranker.stream(source):
         if term is not None:
             term.result(item)
+            health.observe(
+                item.result, surfaced=term.shown > shown_before, partition=item.partition
+            )
+            shown_before = term.shown
         else:
             print(json.dumps(item.as_dict(), ensure_ascii=False))
+            health.observe(item.result, partition=item.partition)
     if term is not None:
-        term.footer(ranker.saturation)
+        term.footer(getattr(ranker, "saturation", 0.0))
+    _report_health(health)
     return 0
 
 
@@ -306,6 +328,16 @@ def cmd_scope(args: argparse.Namespace) -> int:
     return 0
 
 
+def _report_health(health) -> None:
+    """Say whether the stream could have taught a baseline at all."""
+    warnings = health.warnings()
+    if not warnings:
+        return
+    print(f"flypaper: {health.summary()}", file=sys.stderr)
+    for warning in warnings:
+        print(f"flypaper: warning: {warning}", file=sys.stderr)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fly",
@@ -408,6 +440,20 @@ def build_parser() -> argparse.ArgumentParser:
             "empty, so early responses score high because nothing is familiar yet rather "
             "than because they are unusual. They are still learned from."
         ),
+    )
+    ranker.add_argument(
+        "--follow",
+        action="store_true",
+        help=(
+            "with a file, follow it as ffuf writes it (`ffuf -of json -o out.json`), rather "
+            "than reading it once. Implies --live."
+        ),
+    )
+    ranker.add_argument(
+        "--follow-idle",
+        type=float,
+        default=10.0,
+        help="with --follow, stop after this many seconds without a new result",
     )
     ranker.add_argument("--top", type=int, default=None, help="print at most this many results")
     ranker.add_argument(
