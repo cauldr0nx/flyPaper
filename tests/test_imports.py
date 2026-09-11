@@ -41,15 +41,11 @@ def test_every_subpackage_is_present():
 def test_unbuilt_milestones_raise_rather_than_return_garbage():
     """A stub must fail loudly. Silently returning nothing is how bad results get shipped."""
     from flypaper.brain import bloom, extract, flyhash
-    from flypaper.encode import channels, features
     from flypaper.rank import report, score
     from flypaper.stage2 import body_features, refetch
     from flypaper.store import db
 
     for call in (
-        channels.channel_names,
-        channels.n_channels,
-        lambda: features.encode(None),
         extract.extract,
         flyhash.RandomProjectionFlyHash,
         flyhash.ConnectomeFlyHash,
@@ -62,3 +58,12 @@ def test_unbuilt_milestones_raise_rather_than_return_garbage():
     ):
         with pytest.raises(NotImplementedError):
             call()
+
+
+def test_the_encoder_is_built():
+    """M2 is done; these must no longer be stubs."""
+    from flypaper.encode import CHANNEL_SETS, channel_names, n_channels
+
+    assert len(CHANNEL_SETS) >= 2
+    assert n_channels() > 20
+    assert all(isinstance(name, str) for name in channel_names())
