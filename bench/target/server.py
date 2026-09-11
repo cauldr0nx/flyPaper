@@ -28,6 +28,12 @@ Surfaces
 
 `/stable/<word>`  A control: unknown words return a byte-identical 404. Nothing jitters.
                   The hit is `/stable/backup`.
+
+`/collide/<word>` The ffuf issue #387 case with the status code taken away. Same word-count
+                  collision as `/calib/`, but the noise answers **200** rather than 404, so
+                  autocalibration has nothing but size, words and lines to work with. This
+                  is the faithful reproduction; `/calib/` turns out not to be, because a
+                  distinct 404 hands `-ac` a clean discriminator.
 """
 
 from __future__ import annotations
@@ -46,11 +52,64 @@ CALIB_404_LINES = 20
 CALIB_HIT_LINES = 40
 
 # Ground truth. Everything else on these surfaces is noise by construction.
-HITS = {
-    "/token/account": "token-rotating surface: the one genuinely different page",
-    "/calib/reports": "issue #387: word count collides with the autocalibrated filter",
-    "/stable/backup": "stable surface: the one genuinely different page",
+#
+# Several hits per surface, deliberately spanning obvious to subtle, because a ranking
+# metric computed against a single needle says almost nothing: precision@10 with one
+# labelled item cannot exceed 0.1 whatever the ranker does.
+#
+# `(words, lines, filler)` shapes each page. On /calib/ every page - hits included - is
+# pinned to CALIB_WORDS so the word filter `-ac` derives carries no information at all.
+HIT_SHAPES: dict[str, tuple[int, int, str]] = {
+    # Token surface. Baseline is (80, 12); these range from far away to very close.
+    "/token/account": (240, 46, "account"),
+    "/token/admin": (700, 90, "adminpanel"),
+    "/token/backup.sql": (1500, 160, "dump"),
+    "/token/.git": (95, 14, "gitcfg"),  # subtle: near the baseline shape
+    "/token/config.json": (60, 9, "cfg"),  # subtle: smaller than baseline
+    "/token/debug": (300, 30, "debug"),
+    "/token/internal": (88, 13, "internal"),  # very subtle
+    "/token/metrics": (450, 61, "metric"),
+    # Issue #387 surface. Every hit keeps the 404 page's word count.
+    "/calib/reports": (CALIB_WORDS, 40, "report"),
+    "/calib/exports": (CALIB_WORDS, 60, "export"),
+    "/calib/audit": (CALIB_WORDS, 8, "audit"),
+    "/calib/console": (CALIB_WORDS, 31, "console"),
+    "/calib/staging": (CALIB_WORDS, 22, "staging"),  # subtle: 2 lines off baseline
+    "/calib/legacy": (CALIB_WORDS, 19, "legacy"),  # subtle: 1 line off baseline
+    # Issue #387 with no status discriminator: noise answers 200, so only size, words and
+    # lines are available to a filter, and the word count is pinned across all of them.
+    "/collide/reports": (CALIB_WORDS, 40, "report"),
+    "/collide/exports": (CALIB_WORDS, 60, "export"),
+    "/collide/audit": (CALIB_WORDS, 8, "audit"),
+    "/collide/console": (CALIB_WORDS, 31, "console"),
+    "/collide/staging": (CALIB_WORDS, 22, "staging"),
+    "/collide/legacy": (CALIB_WORDS, 19, "legacy"),
+    # Stable surface. Baseline is (60, 10).
+    "/stable/backup": (310, 52, "backup"),
+    "/stable/admin": (620, 80, "admin"),
+    "/stable/.env": (64, 11, "env"),  # subtle
+    "/stable/private": (180, 26, "private"),
+    "/stable/trace": (900, 110, "trace"),
+    "/stable/old": (58, 9, "old"),  # subtle: smaller than baseline
 }
+
+#: Hits whose shape sits within a few percent of their surface's noise baseline. Reported
+#: separately at M4: a ranker that only finds the obvious ones is not doing much.
+SUBTLE = frozenset(
+    {
+        "/token/.git",
+        "/token/config.json",
+        "/token/internal",
+        "/calib/staging",
+        "/calib/legacy",
+        "/collide/staging",
+        "/collide/legacy",
+        "/stable/.env",
+        "/stable/old",
+    }
+)
+
+HITS = {path: ("subtle" if path in SUBTLE else "obvious") for path in HIT_SHAPES}
 
 
 def _digest(path: str) -> int:
@@ -106,13 +165,10 @@ def counts(body: bytes) -> tuple[int, int]:
 
 def build_response(path: str) -> tuple[int, bytes, str]:
     """(status, body, content_type) for a path. Pure; no state, no clock, no randomness."""
-    if path == "/token/account":
-        return 200, _page("account", 240, 46, "account"), "text/html"
-    if path == "/calib/reports":
-        # Same word count as the /calib 404 page; different size and line count.
-        return 200, _page("reports", CALIB_WORDS, CALIB_HIT_LINES, "report"), "text/html"
-    if path == "/stable/backup":
-        return 200, _page("backup", 310, 52, "backup"), "text/html"
+    if path in HIT_SHAPES:
+        words, lines, filler = HIT_SHAPES[path]
+        title = path.rsplit("/", 1)[-1].replace(".", "") or "page"
+        return 200, _page(title, words, lines, filler), "text/html"
 
     if path.startswith("/token/"):
         # Identical page, fresh token. Only Content-Length moves.
@@ -120,6 +176,10 @@ def build_response(path: str) -> tuple[int, bytes, str]:
 
     if path.startswith("/calib/"):
         return 404, _page("NotFound", CALIB_WORDS, CALIB_404_LINES, "missing"), "text/html"
+
+    if path.startswith("/collide/"):
+        # 200, not 404: the soft-404 shape, so status separates nothing.
+        return 200, _page("NotFound", CALIB_WORDS, CALIB_404_LINES, "missing"), "text/html"
 
     if path.startswith("/stable/"):
         return 404, _page("NotFound", 60, 10, "gone"), "text/html"
@@ -160,15 +220,8 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.describe:
-        for path in (
-            "/calib/zzq7x9",
-            "/calib/reports",
-            "/token/zzq7x9",
-            "/token/aaaa",
-            "/token/account",
-            "/stable/zzq7x9",
-            "/stable/backup",
-        ):
+        probes = ["/calib/zzq7x9", "/token/zzq7x9", "/token/aaaa", "/stable/zzq7x9"]
+        for path in probes + sorted(HIT_SHAPES):
             status, body, _ = build_response(path)
             words, lines = counts(body)
             print(f"{path:24} status={status} size={len(body):5} words={words:4} lines={lines:3}")

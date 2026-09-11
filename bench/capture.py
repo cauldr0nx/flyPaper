@@ -35,6 +35,24 @@ LIVE_RATE_CEILING = 10
 FFUFME = "http://127.0.0.1:8099"
 BENCH = "http://127.0.0.1:8110"
 
+# Labels come from the target that serves them, so the corpus and the ground truth cannot
+# drift apart.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "target"))
+from server import HITS as BENCH_HITS  # noqa: E402
+
+
+def _bench_hits(prefix: str) -> list[str]:
+    return sorted(p.rsplit("/", 1)[-1] for p in BENCH_HITS if p.startswith(prefix))
+
+
+def _bench_subtle(prefix: str) -> list[str]:
+    return sorted(
+        p.rsplit("/", 1)[-1]
+        for p, kind in BENCH_HITS.items()
+        if p.startswith(prefix) and kind == "subtle"
+    )
+
+
 SURFACES: dict[str, dict] = {
     "ffufme-no404": {
         "url": f"{FFUFME}/cd/no404/FUZZ",
@@ -52,21 +70,35 @@ SURFACES: dict[str, dict] = {
     },
     "bench-token": {
         "url": f"{BENCH}/token/FUZZ",
-        "hits": ["account"],
+        "hits": _bench_hits("/token/"),
+        "subtle_hits": _bench_subtle("/token/"),
         "scenario": "token rotation: identical page, variable-length CSRF token, defeating -fs",
         "target": "bench/target/server.py (ours)",
         "authorization": "our own code, loopback only",
     },
     "bench-calib": {
         "url": f"{BENCH}/calib/FUZZ",
-        "hits": ["reports"],
+        "hits": _bench_hits("/calib/"),
+        "subtle_hits": _bench_subtle("/calib/"),
         "scenario": "ffuf issue #387: the hit's word count collides with the autocalibrated filter",
+        "target": "bench/target/server.py (ours)",
+        "authorization": "our own code, loopback only",
+    },
+    "bench-collide": {
+        "url": f"{BENCH}/collide/FUZZ",
+        "hits": _bench_hits("/collide/"),
+        "subtle_hits": _bench_subtle("/collide/"),
+        "scenario": (
+            "ffuf issue #387, faithfully: noise answers 200 and every response shares the "
+            "hits' word count, so autocalibration has only size/words/lines to work with"
+        ),
         "target": "bench/target/server.py (ours)",
         "authorization": "our own code, loopback only",
     },
     "bench-stable": {
         "url": f"{BENCH}/stable/FUZZ",
-        "hits": ["backup"],
+        "hits": _bench_hits("/stable/"),
+        "subtle_hits": _bench_subtle("/stable/"),
         "scenario": "control: byte-identical 404s, nothing jitters",
         "target": "bench/target/server.py (ours)",
         "authorization": "our own code, loopback only",
@@ -135,6 +167,7 @@ def capture(name: str, rate: int, threads: int) -> dict:
         "wordlist": WORDLIST.name,
         "records": records,
         "hits": surface["hits"],
+        "subtle_hits": surface.get("subtle_hits", []),
         "file": out.name,
         "bodies_retained": False,
     }

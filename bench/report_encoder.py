@@ -96,13 +96,21 @@ def main() -> None:
         "no corpus is committed.\n"
     )
     add(
-        "The ffuf issue #387 surface is worth stating precisely: it is stronger than the\n"
-        "tracker's report. **Every one of the 1,998 records has `words=100`, the hit included.**\n"
-        "The word filter `-ac` derives is not merely unlucky, it carries no information at all.\n"
-        "Confirmed against real ffuf: without `-ac` the hit shows as\n"
-        "`[Status: 200, Size: 1503, Words: 100, Lines: 40]`; with `-ac` it is hidden.\n"
+        "The ffuf issue #387 surfaces are worth stating precisely. On `bench-calib`\n"
+        "**every one of the 1,998 records has `words=100`, the hit included**, so the word\n"
+        "filter autocalibration derives carries no information at all. `bench-collide` goes\n"
+        "further and answers 200 to unknown paths, leaving `-ac` nothing but size, words and\n"
+        "lines.\n"
     )
-
+    add(
+        "**Correction.** An earlier version of this report claimed that `-ac` hides the hit on\n"
+        "this surface. It does not. That claim came from a single-word probe whose output was\n"
+        "misread - the result line was there and was scrolled out of the window being read.\n"
+        "Re-tested against ffuf 2.1.0-dev at one, two hundred and two thousand words, `-ac`\n"
+        "shows every hit on both surfaces. The scenario is still worth having in the corpus,\n"
+        "because it is a surface on which one whole field is uninformative by construction;\n"
+        "it is simply not a case the current `-ac` fails. See reports/m4-vs-manual-filters.md.\n"
+    )
     add("## 2. Three encodings, measured\n")
     add(
         "Separation ratio: how far the labelled hit sits from the noise cluster's centroid,\n"

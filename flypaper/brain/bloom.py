@@ -100,6 +100,40 @@ class FlyBloomFilter:
         ceiling = tag.sum(axis=1) * self.w_rest
         return np.clip(driven / np.maximum(ceiling, self.eps), 0.0, 1.0)
 
+    def score_excluding(self, tag: np.ndarray, *, when: float | None = None) -> np.ndarray:
+        """Novelty for a tag that is already written into the filter, as if it were not.
+
+        Leave-one-out, and exact rather than approximate: `_depress` multiplies each active
+        weight by `1 - learning_rate * strength`, and multiplication commutes, so dividing
+        that same factor back out recovers the weight the cell would have had if this one
+        encounter had never happened - whatever order the encounters came in.
+
+        This is what makes offline scores comparable to live ones. Without it, scoring a
+        completed run in two passes compresses every score, because each record has been
+        depressed once by itself before being scored.
+
+        Exact only while `decay_halflife` is None. With decay the recovery between then and
+        now is not inverted, so the result is an approximation and is documented as one.
+        """
+        tag = np.atleast_2d(np.asarray(tag, dtype=np.float64))
+        now = when if when is not None else self._clock
+        weights = self._decayed(now)
+        out = np.empty(len(tag), dtype=np.float64)
+        for i, row in enumerate(tag):
+            active = row > 0
+            restored = weights
+            if active.any():
+                strength = row[active]
+                strength = strength / max(strength.max(), self.eps)
+                factor = 1.0 - self.learning_rate * strength
+                restored = weights.copy()
+                restored[active] /= np.maximum(factor, self.eps)
+                restored = np.minimum(restored, self.w_rest)
+            driven = float(row @ restored)
+            ceiling = float(row.sum()) * self.w_rest
+            out[i] = min(max(driven / max(ceiling, self.eps), 0.0), 1.0)
+        return out
+
     def observe(self, tag: np.ndarray, *, when: float | None = None) -> np.ndarray:
         """Score, then learn. One pass, in that order - a record is never scored against
         knowledge of itself."""

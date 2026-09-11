@@ -22,7 +22,10 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=20260911)
     args = ap.parse_args()
 
-    hits = [h for s in SURFACES.values() for h in s["hits"]]
+    # Surfaces share hit names deliberately - /calib/ and /collide/ are the same scenario
+    # with and without a status discriminator - so the list must be deduplicated or those
+    # words get requested twice and every recall figure comes out above 100%.
+    hits = list(dict.fromkeys(h for s in SURFACES.values() for h in s["hits"]))
     words = [w for w in generate(args.count, args.seed) if w not in hits]
     words = words[: args.count - len(hits)]
 

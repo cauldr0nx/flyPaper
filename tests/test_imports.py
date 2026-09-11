@@ -40,13 +40,10 @@ def test_every_subpackage_is_present():
 
 def test_unbuilt_milestones_raise_rather_than_return_garbage():
     """A stub must fail loudly. Silently returning nothing is how bad results get shipped."""
-    from flypaper.rank import report, score
     from flypaper.stage2 import body_features, refetch
     from flypaper.store import db
 
     for call in (
-        score.score,
-        report.render,
         refetch.refetch,
         body_features.body_features,
         db.open_db,
