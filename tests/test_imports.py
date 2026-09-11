@@ -40,14 +40,9 @@ def test_every_subpackage_is_present():
 
 def test_unbuilt_milestones_raise_rather_than_return_garbage():
     """A stub must fail loudly. Silently returning nothing is how bad results get shipped."""
-    from flypaper.stage2 import body_features, refetch
     from flypaper.store import db
 
-    for call in (
-        refetch.refetch,
-        body_features.body_features,
-        db.open_db,
-    ):
+    for call in (db.open_db,):
         with pytest.raises(NotImplementedError):
             call()
 
@@ -72,3 +67,15 @@ def test_the_encoder_is_built():
     assert len(CHANNEL_SETS) >= 2
     assert n_channels() > 20
     assert all(isinstance(name, str) for name in channel_names())
+
+
+def test_stage_two_is_built_and_refuses_by_default():
+    """M5 is done. Its defining property is that it refuses without an explicit scope."""
+    import pytest
+
+    from flypaper.stage2.refetch import MAX_RATE, refetch
+    from flypaper.stage2.scope import Scope
+
+    assert MAX_RATE <= 10, "the stage-two rate ceiling must stay conservative"
+    with pytest.raises(ValueError, match="explicit scope"):
+        list(refetch([], Scope()))

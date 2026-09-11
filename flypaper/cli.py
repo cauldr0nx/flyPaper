@@ -107,6 +107,82 @@ def cmd_rank(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_taste(args: argparse.Namespace) -> int:
+    """Stage two: re-fetch the top-N most novel candidates. Scope-gated, rate-limited."""
+    from flypaper.rank.score import rank
+    from flypaper.stage2.body_features import body_features, shared_boilerplate
+    from flypaper.stage2.refetch import MAX_RATE, RateLimiter, refetch
+    from flypaper.stage2.scope import Scope
+
+    scope = Scope.from_file(args.scope)
+    source = iter_batch(args.file) if args.file else iter_stdin()
+    ranked = rank(source, passes=2, channel_set=args.channel_set)
+
+    limiter = RateLimiter(args.rate)
+    if limiter.capped:
+        print(
+            f"flypaper: requested rate {args.rate}/s exceeds the stage-two ceiling; "
+            f"using {MAX_RATE}/s.",
+            file=sys.stderr,
+        )
+    print(
+        f"flypaper: stage two on the top {args.top} of {len(ranked)} by novelty, "
+        f"{limiter.rate}/s, scope {args.scope}. Redirects are recorded, never followed.",
+        file=sys.stderr,
+    )
+
+    headers = {}
+    for item in args.header or []:
+        name, _, value = item.partition(":")
+        if not value:
+            raise SystemExit(f"--header must be 'Name: value', got {item!r}")
+        headers[name.strip()] = value.strip()
+
+    by_url = {s.url: s for s in ranked}
+    fetched = list(
+        refetch(
+            (s.result for s in ranked),
+            scope,
+            top=args.top,
+            rate=args.rate,
+            headers=headers or None,
+            retain_bodies=True,
+            limiter=limiter,
+        )
+    )
+    features = {
+        f.url: body_features(f.body, scraper=by_url[f.url].result.scraper)
+        for f in fetched
+        if f.url in by_url
+    }
+    boilerplate = shared_boilerplate(features.values())
+
+    for f in fetched:
+        scored = by_url.get(f.url)
+        feat = features.get(f.url)
+        record = {
+            "url": f.url,
+            "stage1_novelty": round(scored.novelty, 6) if scored else None,
+            "status": f.status,
+            "length": f.length,
+            "content_type": f.content_type,
+            "redirect_location": f.location,
+            "elapsed_ms": round(f.elapsed_ms, 2),
+            "error": f.error or None,
+            "body": feat.as_dict() if feat else None,
+            "shared_title": bool(feat and feat.title in boilerplate),
+        }
+        print(json.dumps(record, ensure_ascii=False))
+
+    for decision in scope.skipped:
+        print(f"flypaper: skipped {decision.url} - {decision.reason}", file=sys.stderr)
+    print(
+        f"flypaper: requested {len(fetched)}, skipped {len(scope.skipped)} out of scope.",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fly",
@@ -209,6 +285,39 @@ def build_parser() -> argparse.ArgumentParser:
     ranker.add_argument("--top", type=int, default=None, help="print at most this many results")
     ranker.add_argument("--jsonl", action="store_true", help="emit JSONL for piping onward")
     ranker.set_defaults(func=cmd_rank)
+
+    taste = sub.add_parser(
+        "taste",
+        help="stage two: re-fetch the top-N novel candidates, scope-gated and rate-limited",
+        description=(
+            "Re-requests only URLs already present in the input stream, only those matching "
+            "an explicit --scope file, slowly, following no redirects. Never crawls, never "
+            "guesses, never expands scope."
+        ),
+    )
+    taste.add_argument("file", nargs="?", help="a completed ffuf results file; omit for stdin")
+    taste.add_argument(
+        "--scope",
+        required=True,
+        help=(
+            "file of host patterns, one per line: an exact host, or '*.example.com' for "
+            "subdomains. Mandatory - there is no default and no same-domain inference."
+        ),
+    )
+    taste.add_argument("--top", type=int, default=10, help="how many candidates to re-fetch")
+    taste.add_argument(
+        "--rate",
+        type=float,
+        default=1.0,
+        help="requests per second. Capped at a hard ceiling in the code, not by this flag.",
+    )
+    taste.add_argument(
+        "--header",
+        action="append",
+        help="'Name: value', passed through verbatim. Repeatable.",
+    )
+    taste.add_argument("--channel-set", default=CHANNEL_SET_VERSION)
+    taste.set_defaults(func=cmd_taste)
 
     return parser
 
