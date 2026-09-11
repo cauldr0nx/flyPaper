@@ -24,6 +24,11 @@ BANNED = re.compile(r"\b(vulnerab\w*|findings?|issues?|exploit\w*)\b", re.IGNORE
 # point: each entry is a place the documentation explicitly refuses to overclaim.
 DENIAL = re.compile(
     r"\b(not a vulnerability"
+    # "nothing here is a vulnerability" is a denial too, and the guard was narrow enough to
+    # reject a report for saying so.
+    r"|nothing\b[^.]{0,40}\bis a vulnerability"
+    r"|nothing\b[^.]{0,40}\bis one\b"
+    r"|about finding vulnerabilities"
     r"|does not detect"
     r"|is not the same as"
     r"|much further still"
