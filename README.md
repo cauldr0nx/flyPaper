@@ -20,20 +20,42 @@ ffuf -mc all -json -u https://target/FUZZ -w list.txt | fly ingest
 
 ## Status
 
-Early. The scaffold and the ingest path are built; nothing ranks anything yet.
+The pipeline is built end to end. Each milestone is a binary gate; a failed gate is written
+up in `reports/` and stopped on, never loosened by moving the threshold.
 
-| Milestone | What it is | State |
+| Milestone | What it is | Outcome |
 |---|---|---|
-| M0 | Scaffold, licenses recorded | done |
-| M1 | Ingest spike — how ffuf actually streams, schema-tolerant parser | done, see [reports/m1-ingest.md](reports/m1-ingest.md) |
-| M2 | Encoder and replay corpus | not started |
-| M3 | Connectome FlyHash vs. random projection | not started |
-| M4 | Ranking, measured against ffuf's own filters | not started |
-| M5 | Stage two — scope-gated, rate-limited re-fetch | not started |
-| M6 | Ergonomics | not started |
+| M0 | Scaffold, licenses recorded | passed |
+| M1 | Ingest spike | passed — [reports/m1-ingest.md](reports/m1-ingest.md) |
+| M2 | Encoder and replay corpus | passed — [reports/m2-encoder.md](reports/m2-encoder.md) |
+| M3 | Connectome FlyHash vs. random projection | **split** — [reports/m3-flyhash-benchmark.md](reports/m3-flyhash-benchmark.md) |
+| M4 | Ranking vs. ffuf's own filters | passed — [reports/m4-vs-manual-filters.md](reports/m4-vs-manual-filters.md) |
+| M5 | Stage two, scope-gated and rate-limited | passed — [reports/m5-stage-two.md](reports/m5-stage-two.md) |
+| M6 | Ergonomics | passed — [reports/m6-ergonomics.md](reports/m6-ergonomics.md) |
+| M7 | Adaptive foraging, delayed reward | not started |
 
-Each milestone is a binary gate. A failed gate is written up in `reports/` and stopped on,
-never loosened by moving the threshold.
+### What the measurements actually said
+
+**The connectome does not beat random projection.** Wired from the measured MaleCNS
+connectivity, FlyHash lands inside the spread of random draws for novelty detection —
+beating 9 to 11 of 15 seeds, which is a coin flip — and is clearly worse at nearest-neighbour
+retrieval. That is a real result about the published model and a reassuring one: Dasgupta,
+Stevens & Navlakha assumed a random projection because that is what the biology looked like
+statistically, and the measured wiring says the simplification costs nothing on this task.
+flypaper ships on random projection because the two are indistinguishable here and random
+needs no 508 MB download.
+
+**ffuf's `-ac` is a strong incumbent.** The ffuf issue #387 scenario did not reproduce
+against ffuf 2.1.0-dev on either surface built to trigger it. At equal review budget, novelty
+ranking matched `-ac` and a competent hand-tuned filter on recall across six surfaces. What
+it did better was ordering: a genuine result at rank 1 on all six, where the filters needed
+up to 470 results reviewed first. And it was the only one of the three not to fail badly on
+at least one surface, with no per-target configuration.
+
+**The encoder is where the skill lives, and the obvious channels were the wrong ones.** An
+input-word character profile — one of the candidate encodings — turned out to supply 98% of
+the within-cluster variance and destroy exactly the collapse the tool depends on, because the
+fuzzed word differs on every request by construction.
 
 ## Install
 
@@ -44,21 +66,37 @@ make ci          # ruff + pytest, offline, no dataset required
 
 There is deliberately no hosted CI workflow yet; `make ci` is the gate.
 
-## Usage today
+## Usage
 
 ```bash
-# live, from a pipe
-ffuf -mc all -json -u http://host/FUZZ -w list.txt | fly ingest
+# live, straight off the pipe
+ffuf -mc all -json -u http://host/FUZZ -w list.txt | fly rank
 
-# from a finished results file, either shape
+# a completed results file, scored in two passes
+fly rank results.json --top 20
+
+# against a saved baseline, so a second scan of the same target is not novel again
+fly rank results.json --baseline acme --decay-halflife 604800
+
+# stage two: re-fetch the most novel candidates, scope-gated and slow
+fly taste results.json --scope scope.txt --top 10 --rate 1
+
+# parse only, no scoring
 fly ingest --file results.json
 
-# follow a file still being written
-fly ingest --file results.jsonl --follow
+fly baselines            # what is stored, and how stale
 ```
 
-`fly ingest` parses and normalises; it does not filter, threshold or score. `fly rank`
-exists as a command and tells you it arrives at M4.
+`-mc all` is deliberate: you want every response, including the 404 sea, because the noise
+*is* the baseline. Filtering upstream destroys the thing the filter needs.
+
+There is no novelty threshold to choose. A fixed one cannot work — baseline noise sits at
+0.000 on every surface measured, but the weakest genuine hit ranged from 0.001 to 0.318
+across them — so the cutoff is a review budget instead: `--percentile 99.5` shows the most
+novel half-percent *for this target*, calibrated from the run itself.
+
+On a 1,998-response scan of a target whose every response carries a rotating CSRF token,
+that prints eight lines, and all eight are the planted hits.
 
 ### The connectome data
 

@@ -16,6 +16,7 @@ which is not the same as *this response is interesting*.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 
@@ -93,6 +94,13 @@ class Ranker:
     decay_halflife: float | None = None
     seed: int = 0
     circuit_path: str | None = None
+    #: How "time" is counted for temporal decay. "records" is right within one scan, where
+    #: elapsed time is how much else has gone past. "wallclock" is right across scans, and
+    #: is required for a persisted baseline: a baseline saved six months ago should be six
+    #: months stale, not 1,998 records stale. Mixing the two corrupts a baseline silently,
+    #: because the stored last-seen stamps would be on the wrong scale, so the store
+    #: records which was used and refuses a mismatch.
+    time_base: str = "records"
 
     encoder: Encoder = field(init=False)
     flyhash: FlyHash = field(init=False)
@@ -100,6 +108,8 @@ class Ranker:
     n_scored: int = field(init=False, default=0)
 
     def __post_init__(self) -> None:
+        if self.time_base not in ("records", "wallclock"):
+            raise ValueError(f"unknown time_base {self.time_base!r}")
         self.encoder = Encoder(self.channel_set)
         rng = np.random.default_rng(self.seed)
 
@@ -135,11 +145,15 @@ class Ranker:
     def saturation(self) -> float:
         return self.filter.saturation
 
+    def _when(self) -> float | None:
+        """The timestamp to score at. `None` lets the filter tick its own record counter."""
+        return time.time() if self.time_base == "wallclock" else None
+
     def score(self, result: FfufResult) -> Scored:
         """Score one result, then learn from it. In that order."""
         vector = self.encoder.encode(result)
         tag = self.flyhash.tag_valued(vector[None, :])
-        novelty = float(self.filter.observe(tag)[0])
+        novelty = float(self.filter.observe(tag, when=self._when())[0])
         scored = Scored(
             result=result,
             novelty=novelty,
@@ -159,7 +173,7 @@ class Ranker:
         """Build the baseline without producing scores. The first of two offline passes."""
         for result in results:
             vector = self.encoder.encode(result)
-            self.filter.observe(self.flyhash.tag_valued(vector[None, :]))
+            self.filter.observe(self.flyhash.tag_valued(vector[None, :]), when=self._when())
 
     def score_against_baseline(self, result: FfufResult) -> Scored:
         """Score without learning, discounting this record's own contribution.

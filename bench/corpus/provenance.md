@@ -2,43 +2,69 @@
 
 Every corpus records where it came from, when, and on what authorization. **No corpus
 captured from a third-party target is ever committed**, and no corpus holds response
-bodies — metadata and feature vectors only.
+bodies - metadata and feature vectors only. Corpora themselves are gitignored; this file is
+the record of what exists locally.
 
-Corpora themselves are gitignored. This file is the record of what exists locally.
+## Targets
 
-## Authorization basis
+| Target | Basis | Binding |
+|---|---|---|
+| ffufme container | Built locally from public source, run by the operator | `127.0.0.1:8099` |
+| `bench/target/server.py` | Ours, MIT, in this repository | `127.0.0.1:8110` |
+| `www.mcware.org` | Operator authorized this target on 2026-09-11 | public internet |
 
-The only target used so far is a container built from public source and run on loopback on
-the operator's own machine. No third-party host has been contacted by any part of this
-project.
+ffufme image `ffufme:8814611`, id `94d864f9f5da`, built 2026-09-11 from
+<https://github.com/BuildHackSecure/ffufme> commit
+`8814611cca35e824ea70f257684604c2c422258a`. No license file published - run locally only,
+source never vendored. See `reports/licenses.md`.
+
+## The live capture, and what went wrong with it
+
+`mcware-live` was captured on 2026-09-11 at the 10 requests/second live ceiling. It should
+have been a small end-to-end confirmation. It was invoked with the full 2,000-word corpus
+wordlist instead, so it ran for roughly 200 seconds and sent about 2,000 requests, on top of
+an earlier 300-word run.
+
+**The target's edge protection blocked us.** Before the scan, `/` returned 200 and unknown
+paths returned a 404 of constant size. After it, every response - including the front page -
+was a 403 of about 32 KB. The capture therefore contains 1,998 identical 403s and is
+evidence of a blocked scan rather than a useful surface.
+
+Two things came out of that, both recorded rather than quietly fixed:
+
+- **A rate ceiling alone is not enough.** 10/s is polite and it still tripped protection,
+  because volume is a separate axis from rate. `bench/capture.py` now enforces
+  `LIVE_MAX_REQUESTS = 250` for any surface marked live, truncating the wordlist rather than
+  trusting whoever invokes it to pass a small one.
+- **It is a real instance of the habituation case from the brief.** A WAF that begins
+  blocking mid-scan is a change in the baseline and is exactly the kind of thing worth
+  surfacing - the two distinct 403 body lengths (32,225 and 32,215 bytes) even look like a
+  request id embedded in an otherwise fixed page, which is the rotating-token shape.
+
+No further traffic has been sent to that host.
 
 ## Captures
 
-| Corpus | Source | Date | Authorization | Committed |
-|---|---|---|---|---|
-| M1 spike capture | ffufme container, `127.0.0.1:8099` | 2026-09-11 | Locally hosted by the operator, bound to loopback | No — a 9-record slice lives in `tests/fixtures/` as parser fixtures |
+| Corpus | Target | Records | Rate | Scenario | Committed |
+|---|---|---:|---:|---|---|
+| `ffufme-no404` | ffufme | 1,998 | 400/s | wildcard host: 200 to everything | No |
+| `ffufme-basic` | ffufme | 1,998 | 400/s | ordinary surface, real 404s | No |
+| `bench-token` | ours | 1,998 | 400/s | rotating variable-length CSRF token | No |
+| `bench-calib` | ours | 1,998 | 400/s | word-count collision, 404 noise | No |
+| `bench-collide` | ours | 1,998 | 400/s | word-count collision, 200 noise | No |
+| `bench-stable` | ours | 1,998 | 400/s | control: byte-identical 404s | No |
+| `mcware-live` | mcware.org | 1,998 | 10/s | blocked scan; see above | No |
 
-The M1 capture is a 10,000-request run used to settle how ffuf streams, not a labelled
-corpus. The labelled replay corpus is M2 and does not exist yet.
+A nine-record slice of an early ffufme capture lives in `tests/fixtures/` as parser
+fixtures. It is metadata only and is the single committed piece of any capture.
 
-## What M2 must contain
+## Rebuilding
 
-Per §8 of the brief, the corpus must include or be constructed to include:
+```bash
+docker run -d --name ffufme -p 127.0.0.1:8099:80 ffufme:8814611
+python bench/target/server.py --port 8110 &
+python bench/make_corpus_words.py --out bench/corpus/corpus-words.txt
+python bench/capture.py --all-local
+```
 
-- a wildcard / soft-404 host — ffufme's `/cd/no404` lesson
-- a token-rotating endpoint
-- the ffuf issue #387 scenario: a valid result whose size, words or lines individually
-  match an autocalibrated filter
-- at least one combinatorial multi-wordlist run
-
-ffufme covers the first directly and the fourth by construction. The second and third are
-not among its lessons and will need a target we own; that decision is deferred to M2.
-
-## Target provenance
-
-| | |
-|---|---|
-| Image | `ffufme:8814611`, id `94d864f9f5da` |
-| Built | 2026-09-11 from <https://github.com/BuildHackSecure/ffufme> commit `8814611cca35e824ea70f257684604c2c422258a` |
-| Binding | `127.0.0.1:8099` |
-| License | No license file published — run locally only, source never vendored. See `reports/licenses.md`. |
+`--all-local` never touches a live surface. Capturing one requires naming it explicitly.

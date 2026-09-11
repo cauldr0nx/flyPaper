@@ -38,13 +38,17 @@ def test_every_subpackage_is_present():
         assert expected in MODULES, f"missing module: {expected}"
 
 
-def test_unbuilt_milestones_raise_rather_than_return_garbage():
-    """A stub must fail loudly. Silently returning nothing is how bad results get shipped."""
-    from flypaper.store import db
+def test_nothing_is_a_stub_any_more():
+    """M0-M6 are built. If a stub reappears, it should be a deliberate, visible decision."""
+    import inspect
 
-    for call in (db.open_db,):
-        with pytest.raises(NotImplementedError):
-            call()
+    import flypaper
+
+    for name in MODULES:
+        module = importlib.import_module(name)
+        source = inspect.getsource(module)
+        assert "NotImplementedError" not in source, f"{name} still contains a stub"
+    assert flypaper.__version__
 
 
 def test_the_brain_is_built():

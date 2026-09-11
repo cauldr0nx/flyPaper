@@ -15,6 +15,7 @@ from flypaper import __version__
 from flypaper.encode.channels import CHANNEL_SET_VERSION
 from flypaper.ingest.ffuf import AUTO, BASE64, PLAIN, ParseStats
 from flypaper.ingest.stream import iter_batch, iter_stdin, iter_tail
+from flypaper.store.db import default_path as default_db
 
 __all__ = ["main"]
 
@@ -73,6 +74,9 @@ def cmd_rank(args: argparse.Namespace) -> int:
         "circuit_path": args.circuit,
         "decay_halflife": args.decay_halflife,
     }
+
+    if args.baseline:
+        return _rank_with_baseline(args, source, kwargs)
 
     if args.file and not args.live:
         scored = rank(source, passes=2, **kwargs)
@@ -183,6 +187,83 @@ def cmd_taste(args: argparse.Namespace) -> int:
     return 0
 
 
+def _rank_with_baseline(args, source, kwargs) -> int:
+    """Rank against a saved baseline, then optionally fold this run into it.
+
+    This is the mode that makes temporal decay mean anything. Within a single scan, "time"
+    is how many responses have gone past; across scans it is wall-clock, so a baseline built
+    six months ago is six months stale rather than 1,998 records stale.
+    """
+    from flypaper.rank.report import Terminal
+    from flypaper.rank.score import Ranker
+    from flypaper.store.db import Store
+
+    # Across scans, elapsed time is wall-clock. Within one it is how much else went past.
+    ranker = Ranker(time_base="wallclock", **kwargs)
+    with Store(args.db) as store:
+        existing = None
+        if args.baseline in store.names():
+            existing = store.restore_into(args.baseline, ranker)
+            age_days = existing.age_seconds / 86400.0
+            print(
+                f"flypaper: baseline {args.baseline!r} restored - {existing.n_observed} "
+                f"responses, {existing.saturation:.0%} saturated, {age_days:.1f} days old.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"flypaper: baseline {args.baseline!r} is new; everything will look novel "
+                f"on this first run.",
+                file=sys.stderr,
+            )
+
+        term = None
+        if not args.jsonl:
+            term = Terminal(
+                threshold=args.threshold, percentile=args.percentile, warmup=args.warmup
+            )
+            term.header(args.channel_set, args.projection)
+
+        for item in ranker.stream(source):
+            if term is not None:
+                term.result(item)
+            else:
+                print(json.dumps(item.as_dict(), ensure_ascii=False))
+        if term is not None:
+            term.footer(ranker.saturation)
+
+        if not args.no_update:
+            store.save(args.baseline, ranker)
+            print(
+                f"flypaper: baseline {args.baseline!r} updated "
+                f"({ranker.filter.n_observed} responses, {ranker.saturation:.0%} saturated).",
+                file=sys.stderr,
+            )
+    return 0
+
+
+def cmd_baselines(args: argparse.Namespace) -> int:
+    """List or inspect saved baselines."""
+    from flypaper.store.db import Store
+
+    with Store(args.db) as store:
+        names = store.names()
+        if not names:
+            print(f"no baselines in {args.db}", file=sys.stderr)
+            return 0
+        if args.name:
+            print(json.dumps(store.describe(args.name), indent=2))
+            return 0
+        for name in names:
+            d = store.describe(name)
+            print(
+                f"{d['name']:24} {d['channel_set']:12} {d['projection']:11} "
+                f"{d['n_observed']:>8} responses  {d['saturation']:>6.1%} saturated  "
+                f"{d['age_seconds'] / 86400:.1f}d old"
+            )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fly",
@@ -252,7 +333,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--decay-halflife",
         type=float,
         default=None,
-        help="records after which a depressed baseline has recovered half way to novel again",
+        help=(
+            "how long until a depressed baseline has recovered half way to novel again. "
+            "In responses for a single run; in SECONDS when --baseline is used, because "
+            "across scans elapsed time is wall-clock."
+        ),
     )
     ranker.add_argument(
         "--threshold",
@@ -284,7 +369,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ranker.add_argument("--top", type=int, default=None, help="print at most this many results")
     ranker.add_argument("--jsonl", action="store_true", help="emit JSONL for piping onward")
+    ranker.add_argument(
+        "--baseline",
+        help=(
+            "score against a named saved baseline and fold this run into it. This is what "
+            "makes temporal decay meaningful: across scans, time is wall-clock."
+        ),
+    )
+    ranker.add_argument(
+        "--db",
+        default=str(default_db()),
+        help="where baselines live. Feature vectors and hashes only; never response bodies.",
+    )
+    ranker.add_argument(
+        "--no-update",
+        action="store_true",
+        help="score against the baseline without writing this run into it",
+    )
     ranker.set_defaults(func=cmd_rank)
+
+    baselines = sub.add_parser("baselines", help="list or inspect saved baselines")
+    baselines.add_argument("name", nargs="?", help="describe just this one")
+    baselines.add_argument("--db", default=str(default_db()))
+    baselines.set_defaults(func=cmd_baselines)
 
     taste = sub.add_parser(
         "taste",

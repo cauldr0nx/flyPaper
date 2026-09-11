@@ -32,6 +32,13 @@ WORDLIST = CORPUS / "corpus-words.txt"
 # A live third-party surface is never captured faster than this, whatever the flags say.
 LIVE_RATE_CEILING = 10
 
+# ...nor for more requests than this. A rate ceiling alone is not enough, and this repository
+# learned that the expensive way: a capture invoked with the full 2,000-word corpus list ran
+# at a polite 10/s for 200 seconds and still tripped the target's edge protection, which then
+# returned 403 to everything including its own front page. Volume is a separate axis from
+# rate and needs its own ceiling.
+LIVE_MAX_REQUESTS = 250
+
 FFUFME = "http://127.0.0.1:8099"
 BENCH = "http://127.0.0.1:8110"
 
@@ -124,9 +131,19 @@ def ffuf_available() -> bool:
 
 def capture(name: str, rate: int, threads: int) -> dict:
     surface = SURFACES[name]
+    wordlist = WORDLIST
     if surface.get("live"):
         rate = min(rate, LIVE_RATE_CEILING)
         threads = min(threads, 4)
+        words = WORDLIST.read_text(encoding="utf-8").split("\n")
+        if len([w for w in words if w]) > LIVE_MAX_REQUESTS:
+            wordlist = CORPUS / f".live-{LIVE_MAX_REQUESTS}.txt"
+            kept = [w for w in words if w][:LIVE_MAX_REQUESTS]
+            wordlist.write_text("\n".join(kept) + "\n")
+            print(
+                f"[{name}] live surface: wordlist truncated to {LIVE_MAX_REQUESTS} words",
+                file=sys.stderr,
+            )
 
     out = CORPUS / f"{name}.jsonl"
     CORPUS.mkdir(parents=True, exist_ok=True)
@@ -164,7 +181,8 @@ def capture(name: str, rate: int, threads: int) -> dict:
         "captured_utc": started.isoformat(timespec="seconds"),
         "rate_limit_per_second": rate,
         "threads": threads,
-        "wordlist": WORDLIST.name,
+        "wordlist": wordlist.name,
+        "max_requests": LIVE_MAX_REQUESTS if surface.get("live") else None,
         "records": records,
         "hits": surface["hits"],
         "subtle_hits": surface.get("subtle_hits", []),
