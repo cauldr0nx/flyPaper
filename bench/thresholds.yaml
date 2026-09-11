@@ -1,0 +1,18 @@
+# Every threshold in this project cites a paper or a measurement. None is tuned by hand
+# against an evaluation set, because tuning against the eval set invalidates the eval set.
+#
+# Empty until M3 produces the first measured values. Each entry, when added, carries:
+#
+#   value:    the number
+#   source:   "paper" or "measurement"
+#   cite:     the paper and page, or the report and the run that measured it
+#   rationale: why this number and not a neighbouring one
+#
+# Published reference values that M3 will measure against, recorded here so the comparison
+# is fixed before the measurement rather than after it:
+#
+#   orn_types: 50      Dasgupta, Stevens & Navlakha, Science 2017
+#   kenyon_cells: 2000 Dasgupta, Stevens & Navlakha, Science 2017
+#   tag_sparsity: 0.05 Dasgupta, Stevens & Navlakha, Science 2017 (~95% zeros)
+
+thresholds: {}

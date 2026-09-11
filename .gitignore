@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Generated logs and CSVs are regenerable from a seed and a commit hash.
+# The milestone gate reports (*.md) are tracked: they are the deliverable.
+reports/*
+!reports/*.md
+
+# Claude Code local permission overrides are per-machine, not project config.
+.claude/settings.local.json
+
+# Resolved per-machine; the dependency contract lives in pyproject.toml.
+uv.lock

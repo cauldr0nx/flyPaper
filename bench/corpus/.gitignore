@@ -1,0 +1,8 @@
+# Replay corpora are captured locally and are never committed. Only their provenance
+# record (provenance.md) and the small parser fixtures under tests/ are tracked.
+#
+# Never commit a corpus captured from a third-party target. See README.md and
+# reports/licenses.md.
+*
+!.gitignore
+!provenance.md

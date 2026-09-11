@@ -1,0 +1,114 @@
+{
+  "commandline": "ffuf -mc all -of json -o /tmp/claude-1000/-home-edac-dev-flyPaper/34e50b46-d0f1-4829-95c0-99cb09a33173/scratchpad/batch.json -u http://127.0.0.1:8099/FUZZ -w /tmp/claude-1000/-home-edac-dev-flyPaper/34e50b46-d0f1-4829-95c0-99cb09a33173/scratchpad/short.txt -noninteractive -t 10",
+  "time": "2026-09-11T18:27:31Z",
+  "results": [
+    {
+      "input": {
+        "FFUFHASH": "187066",
+        "FUZZ": "logout"
+      },
+      "position": 6,
+      "status": 404,
+      "length": 669,
+      "words": 126,
+      "lines": 23,
+      "content-type": "text/html; charset=UTF-8",
+      "redirectlocation": "",
+      "scraper": {},
+      "duration": 1129938,
+      "resultfile": "",
+      "url": "http://127.0.0.1:8099/logout",
+      "host": "127.0.0.1:8099"
+    },
+    {
+      "input": {
+        "FFUFHASH": "187067",
+        "FUZZ": "logout.xml"
+      },
+      "position": 7,
+      "status": 404,
+      "length": 669,
+      "words": 126,
+      "lines": 23,
+      "content-type": "text/html; charset=UTF-8",
+      "redirectlocation": "",
+      "scraper": {},
+      "duration": 1096269,
+      "resultfile": "",
+      "url": "http://127.0.0.1:8099/logout.xml",
+      "host": "127.0.0.1:8099"
+    },
+    {
+      "input": {
+        "FFUFHASH": "18706a",
+        "FUZZ": "signup.zip"
+      },
+      "position": 10,
+      "status": 404,
+      "length": 669,
+      "words": 126,
+      "lines": 23,
+      "content-type": "text/html; charset=UTF-8",
+      "redirectlocation": "",
+      "scraper": {},
+      "duration": 1236819,
+      "resultfile": "",
+      "url": "http://127.0.0.1:8099/signup.zip",
+      "host": "127.0.0.1:8099"
+    },
+    {
+      "input": {
+        "FFUFHASH": "187062",
+        "FUZZ": "admin.old"
+      },
+      "position": 2,
+      "status": 404,
+      "length": 669,
+      "words": 126,
+      "lines": 23,
+      "content-type": "text/html; charset=UTF-8",
+      "redirectlocation": "",
+      "scraper": {},
+      "duration": 1186320,
+      "resultfile": "",
+      "url": "http://127.0.0.1:8099/admin.old",
+      "host": "127.0.0.1:8099"
+    },
+    {
+      "input": {
+        "FFUFHASH": "187069",
+        "FUZZ": "signup"
+      },
+      "position": 9,
+      "status": 404,
+      "length": 669,
+      "words": 126,
+      "lines": 23,
+      "content-type": "text/html; charset=UTF-8",
+      "redirectlocation": "",
+      "scraper": {},
+      "duration": 1283866,
+      "resultfile": "",
+      "url": "http://127.0.0.1:8099/signup",
+      "host": "127.0.0.1:8099"
+    },
+    {
+      "input": {
+        "FFUFHASH": "187063",
+        "FUZZ": "administrator"
+      },
+      "position": 3,
+      "status": 404,
+      "length": 669,
+      "words": 126,
+      "lines": 23,
+      "content-type": "text/html; charset=UTF-8",
+      "redirectlocation": "",
+      "scraper": {},
+      "duration": 1546137,
+      "resultfile": "",
+      "url": "http://127.0.0.1:8099/administrator",
+      "host": "127.0.0.1:8099"
+    }
+  ]
+}

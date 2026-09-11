@@ -1,0 +1,6 @@
+# Never commit connectome bulk data. Manifests and scripts only.
+*
+!.gitignore
+!manifest.json
+!fetch.py
+!gen_manifest.py
