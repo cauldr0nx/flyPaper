@@ -67,7 +67,44 @@ wrong size** - 9,413 bytes against a 13,328-byte wall. A status filter cannot se
 size filter tuned to the wall would have hidden it. It is almost certainly nothing; the
 point is that joint similarity across fields is what puts it in front of a human at all.
 
-## 3. What this does and does not establish
+## 3. A second target, chosen because it should break a size filter
+
+The first three hosts were conventional front ends. The case section 4 called untested was a
+target whose baseline is not a constant, so a fourth host was picked for exactly that: a
+public API, in a different program's published scope, which answers unknown paths with a
+JSON error **that quotes the path back**. Its 404 body is therefore `192 + len(path)` bytes
+and no two responses of different path length are the same size.
+
+That is the rotating-token scenario the synthetic `bench-token` surface models, except real,
+and arrived at by classifying candidate hosts with three requests each rather than by
+building it.
+
+146 requests. 145 were 404s of 15 distinct sizes; one was a 200. What each approach leaves
+for a human to read:
+
+| Approach | Left to review | Comment |
+|---|---:|---|
+| `-fs 196` (the modal size) | **122 of 146** | the instinctive filter, and it collapses |
+| `-fc 404` (status) | 1 of 146 | misses three of the four real ones |
+| `-fw 29` (modal words) | 4 of 146 | works - if you thought to filter words |
+| `-fl 7` (modal lines) | 4 of 146 | works - if you thought to filter lines |
+| **ffuf `-ac`**, measured | **4 of 146** | correct, and it chose the fields itself |
+| **flypaper**, top 4 | **4 of 146** | the same four, at ranks 1-4 |
+
+The four are the single 200, and three 404s of a different shape - 146 b / 5 words / 8 lines
+against a baseline of ~200 b / 29 words / 7 lines. A different error, not a different page.
+
+**`-ac` and flypaper agree exactly here, and that is the honest headline.** Autocalibration
+is not defeated by a jittering size, because it does not only filter on size: it derived
+stable word and line filters and got the right answer. What flypaper adds is not a better
+answer but the absence of a decision - no field had to be chosen, and the one field an
+operator would have reached for first would have left them 122 responses to read.
+
+That is the same conclusion M4 reached on the synthetic corpus, now measured somewhere
+nobody arranged it: **flypaper matches the incumbent rather than beating it, and removes the
+per-target configuration the incumbent needs to be pointed at.**
+
+## 4. What this does and does not establish
 
 **Does:** the encoder collapses a real 404 wall into a familiar cluster, across three hosts
 with very different response shapes, with no configuration. The ranker then puts the
@@ -86,7 +123,7 @@ now reports the offline ranking as well as the live one, and the dashboard alrea
 suppresses the first fifty. Anyone reading a live ranking on a short scan is reading noise
 at the top, and the tool should say so more loudly than it does.
 
-## 4. Limitations
+## 5. Limitations
 
 - **Three hosts, one program, 438 requests.** This is a demonstration, not a survey.
 - **No labels.** There is no ground truth on a real target, so there is no precision figure
@@ -95,6 +132,11 @@ at the top, and the tool should say so more loudly than it does.
 - **Short wordlist, meaningful words only.** A real content-discovery run uses tens of
   thousands of words, most of them junk, and the familiar cluster would be far denser. That
   should help the ranker, and it is untested.
-- **One shape of target.** All three hosts are conventional web front ends behind a CDN. An
-  API returning JSON to everything, or a single-page app returning 200 to everything, are
-  the cases that would stress the encoder, and neither is here.
+- **Four hosts across two programs.** Three conventional front ends and one API. A
+  single-page app that returns 200 and the same HTML shell to every path is still untested,
+  and is the case most likely to defeat the encoder, since status, size, words and lines
+  would all be constant and only the body differs - which stage one never sees. That is
+  what stage two exists for, and it has not been run against a real target at all.
+- **`-ac` was not beaten on either shape of target.** On the synthetic corpus and on both
+  real ones it produced the same answers. Any claim that flypaper finds things ffuf's
+  autocalibration misses is unsupported by everything measured so far.
