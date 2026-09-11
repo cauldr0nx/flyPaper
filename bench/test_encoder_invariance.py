@@ -15,16 +15,22 @@ The corpus is captured locally and is not committed; these tests skip when it is
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from separation import knn_separation  # noqa: E402  - sibling module in bench/
 
 from flypaper.encode import CHANNEL_SET_VERSION, Encoder
 from flypaper.ingest.stream import iter_batch
 
 CORPUS = Path(__file__).resolve().parent / "corpus"
 SETS = ("v1-raw", "v2-log", "v3-response")
+MIXED = "bench-mixed"
 
 # The gate is asserted on the default set. The others are measured and reported, which
 # is the point of building more than one: two of the three do not clear it.
@@ -34,6 +40,15 @@ pytestmark = pytest.mark.skipif(
     not (CORPUS / "manifest.json").exists(),
     reason="replay corpus not captured; see this module's docstring",
 )
+
+
+def _hits(surface: str) -> list[str]:
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from capture import SURFACES
+
+    return list(SURFACES.get(surface, {}).get("hits", []))
 
 
 def load(surface: str):
@@ -64,12 +79,14 @@ def distance_to_centroid(X: np.ndarray, point: np.ndarray) -> float:
 
 
 def separation(surface: str, hitword: str, channel_set: str) -> tuple[float, float, float]:
-    """(ratio, hit distance, cluster spread) for one surface under one channel set.
+    """How isolated a labelled hit is, in units of the noise's own neighbourhood radius.
 
-    The ratio is how far the labelled hit sits from the noise cluster's centroid, measured
-    in units of the cluster's own diameter. It is scale-free, so it compares across channel
-    sets of different dimensionality - which matters here, since the three sets have 11, 52
-    and 40 channels.
+    Measured locally, with k nearest neighbours, rather than against a global centroid. The
+    centroid version assumed the noise was one population, and reported a perfectly
+    collapsed encoding as a failure the moment it was not - see `bench/separation.py`.
+
+    Returns (ratio, ratio, ratio) so callers that want the older triple still work; only the
+    first is meaningful now.
     """
     results = load(surface)
     X = Encoder(channel_set).encode_all(results)
@@ -81,9 +98,8 @@ def separation(surface: str, hitword: str, channel_set: str) -> tuple[float, flo
         )
     else:
         noise = np.delete(X, hit, axis=0)
-    spread = pairwise_spread(noise)
-    distance = distance_to_centroid(noise, X[hit])
-    return distance / max(spread, 1e-9), distance, spread
+    ratio = float(knn_separation(X[hit], noise)[0])
+    return ratio, ratio, ratio
 
 
 # --- the gate ---------------------------------------------------------------------------------
@@ -136,10 +152,31 @@ def test_input_word_channels_destroy_clustering():
     for surface, hitword in (("bench-token", "account"), ("ffufme-no404", "secret")):
         with_word, _, _ = separation(surface, hitword, "v2-log")
         without_word, _, _ = separation(surface, hitword, "v3-response")
-        assert with_word < GATE_RATIO < without_word, (
+        # The claim is the size of the cost, not that v2-log fails outright. Under the
+        # local metric it clears the gate on some individual hits; it is the hardest hits
+        # on each surface that it loses, which `test_word_channels_fail_the_gate_somewhere`
+        # asserts separately.
+        assert without_word > 10 * with_word, (
             f"{surface}: v2-log {with_word:.1f}x, v3-response {without_word:.1f}x"
         )
-        assert without_word > 5 * with_word, f"{surface}: expected a large gap"
+
+
+def test_word_channels_fail_the_gate_somewhere():
+    """The consequence that matters: on the hardest hit of a surface, v2-log drops below
+    the gate and the default set does not. Measured on every surface with labelled hits."""
+    losses = []
+    for surface in ("bench-token", "bench-collide", "bench-mixed"):
+        hits = _hits(surface)
+        if not hits:
+            continue
+        worst_with = min(separation(surface, h, "v2-log")[0] for h in hits)
+        worst_without = min(separation(surface, h, CHANNEL_SET_VERSION)[0] for h in hits)
+        losses.append((surface, worst_with, worst_without))
+
+    assert losses
+    for surface, with_word, without_word in losses:
+        assert with_word < GATE_RATIO, f"{surface}: v2-log unexpectedly cleared at {with_word:.1f}x"
+        assert without_word > GATE_RATIO, f"{surface}: default set at {without_word:.1f}x"
 
 
 def test_word_channels_are_the_bulk_of_within_cluster_variance():
@@ -154,6 +191,49 @@ def test_word_channels_are_the_bulk_of_within_cluster_variance():
     word = [i for i, n in enumerate(encoder.names) if n.startswith("word.")]
     share = variance[word].sum() / max(variance.sum(), 1e-12)
     assert share > 0.9, f"input-word channels account for only {share:.1%} of the variance"
+
+
+def test_several_noise_populations_at_once_still_collapse():
+    """The case a single-cluster metric could not even express.
+
+    `bench-mixed` answers unknown words from four populations. Each one has to become
+    familiar on its own; there is no single wall to learn.
+    """
+    results = load(MIXED)
+    hits = {r.word for r in results} & set(_hits(MIXED))
+    shapes = {(r.status, r.length, r.words, r.lines) for r in results if r.word not in hits}
+    assert len(shapes) >= 4, f"expected several noise populations, got {len(shapes)}"
+
+    for hitword in sorted(hits):
+        ratio, _, _ = separation(MIXED, hitword, CHANNEL_SET_VERSION)
+        assert ratio > GATE_RATIO, f"{hitword} sits at {ratio:.1f}x"
+
+
+def test_each_population_collapses_tightly_on_its_own():
+    """Within-cluster tightness is the property; the gaps between clusters are not noise."""
+    import collections
+
+    results = load(MIXED)
+    hits = set(_hits(MIXED))
+    X = Encoder(CHANNEL_SET_VERSION).encode_all(results)
+    groups = collections.defaultdict(list)
+    for i, r in enumerate(results):
+        if r.word not in hits:
+            groups[(r.status, r.length, r.words, r.lines)].append(X[i])
+
+    big = [np.array(v) for v in groups.values() if len(v) > 50]
+    assert len(big) >= 4
+    centres = [g.mean(axis=0) for g in big]
+    spreads = [
+        float(np.sqrt(((g - c) ** 2).sum(1)).mean()) for g, c in zip(big, centres, strict=True)
+    ]
+    gaps = [
+        float(np.linalg.norm(centres[a] - centres[b]))
+        for a in range(len(centres))
+        for b in range(a + 1, len(centres))
+    ]
+    # Every population is far tighter than the distance between any two of them.
+    assert max(spreads) * 10 < min(gaps), f"spreads {spreads}, gaps {gaps}"
 
 
 def test_channel_sets_are_versioned_and_distinct():

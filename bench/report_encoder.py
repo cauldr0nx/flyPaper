@@ -9,9 +9,14 @@ Numbers are computed; the interpretation is written. Run after a capture:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from separation import knn_separation
 
 from flypaper import provenance_footer
 from flypaper.encode import CHANNEL_SET_VERSION, Encoder
@@ -28,20 +33,38 @@ CASES = [
     ("bench-token", "account", "rotating token"),
     ("ffufme-no404", "secret", "wildcard / soft-404"),
     ("bench-calib", "reports", "ffuf issue #387"),
+    ("bench-collide", "reports", "ffuf issue #387, no status hint"),
+    ("bench-mixed", "backup.sql", "four noise populations"),
     ("bench-stable", "backup", "control: identical 404s"),
     ("ffufme-basic", "class", "ordinary 404s"),
 ]
 
 
-def spread(X: np.ndarray, sample: int = 400, seed: int = 0) -> float:
-    rng = np.random.default_rng(seed)
-    if len(X) > sample:
-        X = X[rng.choice(len(X), sample, replace=False)]
-    d = np.sqrt(((X[:, None, :] - X[None, :, :]) ** 2).sum(-1))
-    return float(d[np.triu_indices(len(X), 1)].mean())
+def surface_hits(surface: str) -> list[str]:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from capture import SURFACES
+
+    return list(SURFACES.get(surface, {}).get("hits", []))
+
+
+def worst_separation(surface: str, channel_set: str) -> tuple[float, str]:
+    """The hardest labelled hit on a surface, and how isolated it is.
+
+    Reporting one designated hit flatters every channel set, because surfaces carry hits
+    spanning obvious to subtle and the obvious ones separate under almost any encoding. The
+    gate is about the hardest one.
+    """
+    hits = surface_hits(surface)
+    scored = [(separation(surface, h, channel_set), h) for h in hits]
+    return min(scored) if scored else (float("nan"), "")
 
 
 def separation(surface: str, hitword: str, channel_set: str) -> float:
+    """How isolated the hit is, in units of the noise's own neighbourhood radius.
+
+    Local, k-nearest-neighbour. See `bench/separation.py` for why this replaced a
+    centroid-based measure.
+    """
     results = list(iter_batch(CORPUS / f"{surface}.jsonl"))
     X = Encoder(channel_set).encode_all(results)
     hit = next(i for i, r in enumerate(results) if r.word == hitword)
@@ -51,7 +74,7 @@ def separation(surface: str, hitword: str, channel_set: str) -> float:
         )
     else:
         noise = np.delete(X, hit, axis=0)
-    return float(np.linalg.norm(X[hit] - noise.mean(0))) / max(spread(noise), 1e-9)
+    return float(knn_separation(X[hit], noise)[0])
 
 
 def variance_share(surface: str, channel_set: str, prefix: str) -> float:
@@ -67,7 +90,10 @@ def variance_share(surface: str, channel_set: str, prefix: str) -> float:
 def main() -> None:
     manifest = json.loads((CORPUS / "manifest.json").read_text())
     ratios = {
-        (surface, cs): separation(surface, hit, cs) for surface, hit, _ in CASES for cs in SETS
+        (surface, cs): worst_separation(surface, cs)[0] for surface, _, _ in CASES for cs in SETS
+    }
+    hardest = {
+        surface: worst_separation(surface, CHANNEL_SET_VERSION)[1] for surface, _, _ in CASES
     }
 
     lines: list[str] = []
@@ -113,9 +139,22 @@ def main() -> None:
     )
     add("## 2. Three encodings, measured\n")
     add(
-        "Separation ratio: how far the labelled hit sits from the noise cluster's centroid,\n"
-        "in units of that cluster's own mean pairwise spread. Scale-free, so it compares\n"
-        "across sets of different dimensionality. The gate is 4x.\n"
+        "Separation ratio: how empty the labelled hit's neighbourhood is, in units of the\n"
+        "typical noise point's. Measured with k nearest neighbours, so it is scale-free\n"
+        "(comparing sets of 11, 52 and 40 channels) and indifferent to how many populations\n"
+        "the noise is made of. 1.0 means the hit is as crowded as the noise. The gate is 4x,\n"
+        "carried over unchanged from the earlier metric.\n"
+    )
+    add(
+        "**This metric replaced a centroid-based one, and the older numbers in this report\n"
+        "were wrong because of it.** The first version divided the hit's distance from the\n"
+        "noise centroid by the noise's mean pairwise spread, which is a sensible measure of\n"
+        "one population and a meaningless one for several: on `bench-mixed` each population\n"
+        "collapses to a spread of 0.014-0.025 while the populations sit 1.5-2.2 apart, so the\n"
+        "'spread' was measuring the gaps between them and a perfect encoding scored as a\n"
+        "failure. The correction cuts both ways - under the local metric `v1-raw` and\n"
+        "`v2-log` clear the gate on more surfaces than this report previously credited them\n"
+        "with, and that is stated here rather than quietly improved away.\n"
     )
     add(
         "| Surface | Scenario | "
@@ -130,7 +169,17 @@ def main() -> None:
             cells.append(f"**{r:.1f}x**" if r > GATE else f"{r:.1f}x")
         add(f"| `{surface}` | {scenario} | " + " | ".join(cells) + " |")
     add("")
-    add("Bold clears the gate.\n")
+    add(
+        "Bold clears the gate. Each figure is the **hardest labelled hit** on that surface, "
+        "not a designated one: surfaces carry hits spanning obvious to subtle, and the "
+        "obvious ones separate under almost any encoding.\n"
+    )
+    add("| Surface | Hardest hit under the default set |")
+    add("|---|---|")
+    for surface, _, _ in CASES:
+        if hardest.get(surface):
+            add(f"| `{surface}` | `{hardest[surface]}` |")
+    add("")
 
     passes = {cs: sum(1 for s, _, _ in CASES if ratios[(s, cs)] > GATE) for cs in SETS}
     add("| Channel set | Channels | Surfaces clearing the gate |")
@@ -144,10 +193,11 @@ def main() -> None:
     add(
         f"**The input-word channels are the problem, and they are most of it.** Section 6 of\n"
         f"the brief lists an input-word character-class profile - extension, depth, casing,\n"
-        f"entropy - as a candidate encoding, so `v2-log` includes one. It is the worst of the\n"
-        f"three on every surface, and the reason is measurable rather than mysterious: on the\n"
-        f"wildcard host, **{share:.0%} of the variance inside the soft-404 cluster comes from\n"
-        f"the `word.*` channels alone**.\n"
+        f"entropy - as a candidate encoding, so `v2-log` includes one. **It is worse than the\n"
+        f"naive raw encoding on five of seven surfaces despite having five times as many\n"
+        f"channels**, and the reason is measurable rather than mysterious: on the wildcard\n"
+        f"host, **{share:.0%} of the variance inside the soft-404 cluster comes from the\n"
+        f"`word.*` channels alone**.\n"
     )
     add(
         "In hindsight it could not have been otherwise. The fuzzed word is different on every\n"
@@ -179,14 +229,32 @@ def main() -> None:
         "through the list by seeded shuffle.\n"
     )
 
+    mixed = ratios.get(("bench-mixed", CHANNEL_SET_VERSION))
+    if mixed is not None:
+        add(
+            f"**Several noise populations at once are not harder, they are just more of the\n"
+            f"same.** `bench-mixed` answers unknown words from four populations - an HTML 404,\n"
+            f"a login redirect, a JSON 403 and a 200 'no results' page - in roughly\n"
+            f"55/25/10/10 proportion. Each collapses to a spread of 0.014-0.025 while the four\n"
+            f"sit 1.5-2.2 apart, so the encoding treats them as four dense regions rather than\n"
+            f"one smeared one. Its hardest hit still clears the gate at {mixed:.1f}x, and that\n"
+            f"hit shares its status code with the population it is hiding in and differs from\n"
+            f"it by under 4% in word count.\n"
+        )
+        add(
+            "This is the surface that exposed the measurement error above, and it is worth\n"
+            "separating the two: the encoder always handled several populations correctly, and\n"
+            "the metric could not say so.\n"
+        )
+
     add("## 4. Honest limitations of this result\n")
     add(
         "- **The corpus is synthetic and small.** Five surfaces, 1,998 requests each, three of\n"
         "  them served by a target written to contain exactly the scenarios being tested. That\n"
         "  is a fair test of whether the encoder has the properties claimed, and it is not\n"
         "  evidence about real applications.\n"
-        "- **One labelled hit per surface.** Enough for a separation ratio, not enough for a\n"
-        "  precision figure. Ranking metrics arrive at M4 and need more labels than this.\n"
+        "- **Six labelled hits per synthetic surface, one on each ffufme surface.** Enough\n"
+        "  for a separation ratio and for M4's precision figures, not enough for tight ones.\n"
         "- **The separation ratios are not comparable to anything published.** They are a\n"
         "  measure defined here to decide this gate.\n"
         "- **`v1-raw` and `v2-log` are kept, not deleted.** They are the evidence for why the\n"

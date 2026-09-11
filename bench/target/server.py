@@ -29,6 +29,16 @@ Surfaces
 `/stable/<word>`  A control: unknown words return a byte-identical 404. Nothing jitters.
                   The hit is `/stable/backup`.
 
+`/mixed/<word>`   Several noise populations at once, which is what a real host looks like.
+                  Unknown words fall into one of four clusters by hash - an HTML 404, a
+                  redirect to login, a small JSON 403, and a 200 "no results" page - in
+                  roughly 55/25/10/10 proportion. A single `-fs`, `-fc` or `-fw` can
+                  suppress one of them. The hits include three shaped to sit just inside a
+                  cluster, so finding them means separating a real page from the population
+                  it resembles rather than from a uniform wall. Two of the three share the
+                  200 status of the population they sit in, which is the only way to be
+                  genuinely hidden: a hit whose status already differs is not subtle.
+
 `/collide/<word>` The ffuf issue #387 case with the status code taken away. Same word-count
                   collision as `/calib/`, but the noise answers **200** rather than 404, so
                   autocalibration has nothing but size, words and lines to work with. This
@@ -84,6 +94,16 @@ HIT_SHAPES: dict[str, tuple[int, int, str]] = {
     "/collide/console": (CALIB_WORDS, 31, "console"),
     "/collide/staging": (CALIB_WORDS, 22, "staging"),
     "/collide/legacy": (CALIB_WORDS, 19, "legacy"),
+    # Mixed surface: four noise populations, and hits that hide inside three of them.
+    "/mixed/backup.sql": (1400, 150, "dump"),  # unmissable
+    "/mixed/admin": (620, 80, "adminpanel"),
+    "/mixed/graphql": (300, 30, "schema"),
+    # The hard ones share a status with the population they hide in. A hit whose status
+    # already separates it from its neighbours is not subtle, it is just smaller - and the
+    # only cluster here a real 200 page can hide inside is the 200 one.
+    "/mixed/.env": (40, 7, "env"),  # 200, but a shape nothing else has
+    "/mixed/status": (196, 35, "status"),  # 200, against a 200 cluster at 190/34
+    "/mixed/internal": (182, 32, "internal"),  # 200, against a 200 cluster at 190/34
     # Stable surface. Baseline is (60, 10).
     "/stable/backup": (310, 52, "backup"),
     "/stable/admin": (620, 80, "admin"),
@@ -92,6 +112,15 @@ HIT_SHAPES: dict[str, tuple[int, int, str]] = {
     "/stable/trace": (900, 110, "trace"),
     "/stable/old": (58, 9, "old"),  # subtle: smaller than baseline
 }
+
+# The /mixed/ noise populations: (share out of 20, status, words, lines, filler).
+# Shares are deliberately uneven, because real hosts are.
+MIXED_CLUSTERS = (
+    (11, 404, 100, 20, "missing"),  # the HTML error page - the majority
+    (5, 301, 6, 3, "moved"),  # redirect to a login
+    (2, 403, 24, 6, "denied"),  # a small JSON refusal
+    (2, 200, 190, 34, "noresults"),  # a soft-404 "nothing found" page
+)
 
 #: Hits whose shape sits within a few percent of their surface's noise baseline. Reported
 #: separately at M4: a ranker that only finds the obvious ones is not doing much.
@@ -102,6 +131,9 @@ SUBTLE = frozenset(
         "/token/internal",
         "/calib/staging",
         "/calib/legacy",
+        "/mixed/.env",
+        "/mixed/status",
+        "/mixed/internal",
         "/collide/staging",
         "/collide/legacy",
         "/stable/.env",
@@ -176,6 +208,17 @@ def build_response(path: str) -> tuple[int, bytes, str]:
 
     if path.startswith("/calib/"):
         return 404, _page("NotFound", CALIB_WORDS, CALIB_404_LINES, "missing"), "text/html"
+
+    if path.startswith("/mixed/"):
+        # Which population a word lands in is a pure function of the word, so the corpus
+        # is reproducible and a word keeps its cluster across runs - which is also how a
+        # real host behaves, where the route decides the response.
+        bucket = _digest(path) % 20
+        for share, status, words, lines, filler in MIXED_CLUSTERS:
+            if bucket < share:
+                return status, _page("NotFound", words, lines, filler), "text/html"
+            bucket -= share
+        return 404, _page("NotFound", 100, 20, "missing"), "text/html"
 
     if path.startswith("/collide/"):
         # 200, not 404: the soft-404 shape, so status separates nothing.

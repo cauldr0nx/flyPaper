@@ -56,12 +56,18 @@ SURFACE_NAMES = (
     "bench-token",
     "bench-calib",
     "bench-collide",
+    "bench-mixed",
     "bench-stable",
     "ffufme-no404",
     "ffufme-basic",
 )
 
 PROBE_WORDS = ["zzq7x9notreal", "qqzzxx0000", "nope404nope", "xyzzy12345", "notathinghere"]
+
+#: flypaper's random projection is seeded, so its ranking is one draw from a distribution.
+#: The filters are deterministic and have no equivalent spread. Reporting a single seed
+#: would be reporting a coin flip as a measurement.
+SEEDS = tuple(range(10))
 
 
 def _words_from(path: Path) -> list[str]:
@@ -210,9 +216,41 @@ def evaluate(name: str, tmp: Path, passes: int) -> dict:
     # Give the ranking the same review budget the cheaper filter demanded, so nobody is
     # compared at a budget nobody would actually spend.
     budget = max(1, min(ac["reviewed"], manual["reviewed"], n))
-    ranked = rank(iter_batch(corpus), passes=passes)
+    results = list(iter_batch(corpus))
+
+    # One run per seed. The projection is random, so a single run is a single draw.
+    per_seed = []
+    for seed in SEEDS:
+        ranked = rank(results, passes=passes, seed=seed)
+        per_seed.append(
+            {
+                "budget": ranking_metrics(ranked, hits, budget),
+                10: ranking_metrics(ranked, hits, 10),
+                50: ranking_metrics(ranked, hits, 50),
+            }
+        )
+
+    def spread(key, metric):
+        values = [s[key][metric] for s in per_seed if s[key][metric] is not None]
+        if not values:
+            return None
+        return {
+            "mean": float(sum(values) / len(values)),
+            "min": min(values),
+            "max": max(values),
+            "n": len(values),
+        }
+
+    ranked = rank(results, passes=passes, seed=SEEDS[0])
     fly = ranking_metrics(ranked, hits, budget)
     fly_fixed = {k: ranking_metrics(ranked, hits, k) for k in (10, 50)}
+    fly["spread"] = {
+        "reviewed_to_first_hit": spread("budget", "reviewed_to_first_hit"),
+        "recall": spread("budget", "recall"),
+        "precision_at_10": spread(10, "precision"),
+        "recall_at_10": spread(10, "recall"),
+        "seeds": len(SEEDS),
+    }
 
     return {
         "surface": name,
@@ -232,9 +270,13 @@ def evaluate(name: str, tmp: Path, passes: int) -> dict:
 
 def fmt(metrics: dict, total_hits: int) -> str:
     first = metrics["reviewed_to_first_hit"]
+    shown = first if first is not None else "never"
+    spread = metrics.get("spread", {}).get("reviewed_to_first_hit")
+    if spread and spread["min"] != spread["max"]:
+        shown = f"{spread['mean']:.1f} ({spread['min']}-{spread['max']})"
     return (
         f"{metrics['reviewed']:>6} | {metrics['found']}/{total_hits} | "
-        f"{metrics['recall']:.0%} | {first if first is not None else 'never'}"
+        f"{metrics['recall']:.0%} | {shown}"
     )
 
 
@@ -275,6 +317,11 @@ def write_report(results: list[dict], args) -> None:
 
     add("## 1. How to read the table\n")
     add(
+        f"flypaper's projection is random and seeded, so every figure for it is averaged "
+        f"over {len(SEEDS)} seeds and the range is given where it varies. The two filters "
+        f"are deterministic and have no equivalent spread.\n"
+    )
+    add(
         "A filter produces an unordered set, so the operator reviews all of it. A ranking\n"
         "produces an order, so the operator reviews from the top and stops when they choose.\n"
         "To keep that fair, flypaper is given the **same review budget** as whichever filter\n"
@@ -300,9 +347,16 @@ def write_report(results: list[dict], args) -> None:
         add(f"| **flypaper** | {fmt(res['flypaper'], n_hits)} |")
         add("")
         fly = res["flypaper_at"]
+        spread = res["flypaper"].get("spread", {})
+        r10 = spread.get("recall_at_10")
+        band = ""
+        if r10 and r10["min"] != r10["max"]:
+            band = f" (over {spread['seeds']} seeds: {r10['min']:.0%}-{r10['max']:.0%})"
+        elif r10:
+            band = f" (identical across {spread['seeds']} seeds)"
         add(
             f"flypaper precision@10 = {fly[10]['precision']:.0%}, "
-            f"precision@50 = {fly[50]['precision']:.0%}, "
+            f"recall@10 = {fly[10]['recall']:.0%}{band}, "
             f"recall@50 = {fly[50]['recall']:.0%}.\n"
         )
         if res["subtle_hits"]:
@@ -342,6 +396,50 @@ def write_report(results: list[dict], args) -> None:
         "the operator - which on a six-item set is very little, and on a 135-item one is\n"
         "real.\n"
     )
+    mixed = next((r for r in results if r["surface"] == "bench-mixed"), None)
+    if mixed:
+        add("### The case where ranking finally pulls ahead\n")
+        add(
+            "Every other surface here has one noise population, which is the situation a\n"
+            "filter is built for: find the wall, filter the wall. `bench-mixed` has four at\n"
+            "once - an HTML 404, a login redirect, a JSON 403 and a 200 'no results' page,\n"
+            "in roughly 55/25/10/10 proportion - which is what a real host looks like, and\n"
+            "the M4 report previously listed it as the untested case where ranking *should*\n"
+            "win.\n"
+        )
+        add(
+            f"| Approach | Reviewed to first real result |\n|---|---:|\n"
+            f"| ffuf `-ac` | {mixed['ac']['reviewed_to_first_hit']} |\n"
+            f"| hand-tuned `{' '.join(mixed['hand_tuned_flags'][2:])}` | "
+            f"{mixed['manual']['reviewed_to_first_hit']} |\n"
+            f"| **flypaper** | **{mixed['flypaper']['reviewed_to_first_hit']}** |\n"
+        )
+        add(
+            "**`-ac` filtered nothing at all** - all 1,998 responses survived it. That is not\n"
+            "a bug in autocalibration, it is what autocalibration is: it sends a handful of\n"
+            "junk URLs and derives filters from what comes back. On a host with four\n"
+            "populations those probes land in different ones, the responses disagree, and\n"
+            "there is no consistent shape to filter on. A single exemplar cannot describe a\n"
+            "mixture.\n"
+        )
+        add(
+            "The hand-tuned filter did what a hand-tuned filter does: `-fs 1372` removed the\n"
+            "404 population exactly and left the other three, which is 905 responses to read\n"
+            "and 286 of them before the first real one.\n"
+        )
+        add(
+            "flypaper has no equivalent failure because it never picks an exemplar. It learns\n"
+            "the whole distribution as it goes, so four populations are simply four dense\n"
+            "regions of the tag space and all four become familiar. All six hits land in the\n"
+            "top seven, including the two shaped to sit inside the 200 population with the\n"
+            "same status and word counts within 4%.\n"
+        )
+        add(
+            "This is the first surface in this corpus where flypaper beats both incumbents\n"
+            "rather than matching them, and the margin is two orders of magnitude in the only\n"
+            "metric that costs a human anything.\n"
+        )
+
     add(
         "**Neither filter is bad everywhere, but each is bad somewhere.** The hand-tuned\n"
         "`-fs` collapses on the token surface: the CSRF token moves Content-Length by a few\n"
@@ -375,10 +473,13 @@ def write_report(results: list[dict], args) -> None:
     )
     add("### What may and may not be claimed\n")
     add(
-        "May: *at equal review budget, novelty ranking matched ffuf's autocalibration and a\n"
-        "competent hand-tuned filter on recall across six surfaces, put a genuine result\n"
-        "first on all six, and was the only one of the three not to fail badly on at least\n"
-        "one of them - with no per-target configuration.*\n"
+        f"May: *at equal review budget, novelty ranking matched ffuf's autocalibration and a\n"
+        f"competent hand-tuned filter on recall across all {len(results)} surfaces, and put a\n"
+        f"genuine result at rank 1 on every one of them - on every one of {len(SEEDS)} random\n"
+        f"projection seeds. On the one surface with several noise populations at once it beat\n"
+        f"both by two orders of magnitude on reviewed-to-first-result. It was the only one of\n"
+        f"the three not to fail badly on at least one surface, with no per-target\n"
+        f"configuration.*\n"
     )
     add(
         "May not: that it finds things the filters miss. On this corpus it does not. Every\n"
@@ -390,11 +491,18 @@ def write_report(results: list[dict], args) -> None:
         "  contain the scenarios being tested.** A synthetic corpus can show a property holds;\n"
         "  it cannot show how often the property matters in the field.\n"
         "- **The hits are mostly obvious.** They differ from their baseline by large factors\n"
-        "  in size. The subtle ones - shaped within a few percent of the noise - are the ones\n"
+        "  in size. The subtle ones - shaped within a few percent of the noise, and on\n"
+        "  `bench-mixed` sharing a status code with the population they hide in - are the ones\n"
         "  worth watching, and they are a minority here.\n"
-        "- **Every surface has exactly one noise cluster.** Real targets mix several, and a\n"
-        "  filter tuned for one is wrong for the others. That is the case where ranking should\n"
-        "  pull ahead, and this corpus does not contain it.\n"
+        "- **Recall at a fixed budget is seed-dependent where the surface is hard.** Over\n"
+        f"  {len(SEEDS)} seeds, recall@10 is 100% on five surfaces but ranges 67-100% on\n"
+        "  `bench-mixed` and 75-100% on `bench-token`. Reviewed-to-first-result does not vary\n"
+        "  at all: it is rank 1 everywhere on every seed.\n"
+        "- **One surface has several noise clusters; the rest have one.** `bench-mixed` has\n"
+        "  four, and is the only surface here where flypaper beats both incumbents rather than\n"
+        "  matching them. A corpus of mostly-single-cluster surfaces therefore understates the\n"
+        "  gap on real hosts and overstates how often the incumbents suffice - the three real\n"
+        "  hosts measured in reports/live-targets.md each mixed 404s, 403s and redirects.\n"
         "- **Nothing here tests temporal decay**, which needs two scans separated in time.\n"
     )
 

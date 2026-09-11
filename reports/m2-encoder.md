@@ -14,6 +14,8 @@ Numbers are computed by `bench/report_encoder.py`; the interpretation is written
 | `bench-calib` | ffuf issue #387: the hit's word count collides with the autocalibrated filter | 1998 | bench/target/server.py (ours) | 400/s | no |
 | `bench-stable` | control: byte-identical 404s, nothing jitters | 1998 | bench/target/server.py (ours) | 400/s | no |
 | `bench-collide` | ffuf issue #387, faithfully: noise answers 200 and every response shares the hits' word count, so autocalibration has only size/words/lines to work with | 1998 | bench/target/server.py (ours) | 400/s | no |
+| `mcware-live` | live surface: constant-size rendered 404, Vercel edge | 1998 | www.mcware.org | 10/s | yes |
+| `bench-mixed` | four noise populations at once - an HTML 404, a login redirect, a JSON 403 and a 200 'no results' page - with hits hiding inside them | 1998 | bench/target/server.py (ours) | 400/s | no |
 
 ffufme supplies the wildcard host and an ordinary surface. It has no token-rotating
 endpoint and no ffuf issue #387 case, so `bench/target/server.py` supplies both: ours,
@@ -36,34 +38,59 @@ it is simply not a case the current `-ac` fails. See reports/m4-vs-manual-filter
 
 ## 2. Three encodings, measured
 
-Separation ratio: how far the labelled hit sits from the noise cluster's centroid,
-in units of that cluster's own mean pairwise spread. Scale-free, so it compares
-across sets of different dimensionality. The gate is 4x.
+Separation ratio: how empty the labelled hit's neighbourhood is, in units of the
+typical noise point's. Measured with k nearest neighbours, so it is scale-free
+(comparing sets of 11, 52 and 40 channels) and indifferent to how many populations
+the noise is made of. 1.0 means the hit is as crowded as the noise. The gate is 4x,
+carried over unchanged from the earlier metric.
+
+**This metric replaced a centroid-based one, and the older numbers in this report
+were wrong because of it.** The first version divided the hit's distance from the
+noise centroid by the noise's mean pairwise spread, which is a sensible measure of
+one population and a meaningless one for several: on `bench-mixed` each population
+collapses to a spread of 0.014-0.025 while the populations sit 1.5-2.2 apart, so the
+'spread' was measuring the gaps between them and a perfect encoding scored as a
+failure. The correction cuts both ways - under the local metric `v1-raw` and
+`v2-log` clear the gate on more surfaces than this report previously credited them
+with, and that is stated here rather than quietly improved away.
 
 | Surface | Scenario | `v1-raw` (11ch) | `v2-log` (52ch) | `v3-response` (39ch) |
 |---|---|---:|---:|---:|
-| `bench-token` | rotating token | 0.7x | 1.0x | **41.8x** |
-| `ffufme-no404` | wildcard / soft-404 | **4.5x** | 1.1x | **45.2x** |
-| `bench-calib` | ffuf issue #387 | 2.7x | 1.8x | **61.6x** |
-| `bench-stable` | control: identical 404s | 3.0x | 1.9x | **109.3x** |
-| `ffufme-basic` | ordinary 404s | **4.5x** | 1.9x | **18.7x** |
+| `bench-token` | rotating token | 0.9x | 1.1x | **62.2x** |
+| `ffufme-no404` | wildcard / soft-404 | **40.9x** | **8.9x** | **761.1x** |
+| `bench-calib` | ffuf issue #387 | **24.4x** | **15.0x** | **2149.4x** |
+| `bench-collide` | ffuf issue #387, no status hint | 1.4x | 2.1x | **317.5x** |
+| `bench-mixed` | four noise populations | 1.9x | 1.0x | **19.8x** |
+| `bench-stable` | control: identical 404s | **31.2x** | **16.5x** | **3181.6x** |
+| `ffufme-basic` | ordinary 404s | **51.0x** | **19.5x** | **1523.3x** |
 
-Bold clears the gate.
+Bold clears the gate. Each figure is the **hardest labelled hit** on that surface, not a designated one: surfaces carry hits spanning obvious to subtle, and the obvious ones separate under almost any encoding.
+
+| Surface | Hardest hit under the default set |
+|---|---|
+| `bench-token` | `internal` |
+| `ffufme-no404` | `secret` |
+| `bench-calib` | `staging` |
+| `bench-collide` | `staging` |
+| `bench-mixed` | `internal` |
+| `bench-stable` | `old` |
+| `ffufme-basic` | `class` |
 
 | Channel set | Channels | Surfaces clearing the gate |
 |---|---:|---:|
-| `v1-raw` | 11 | 2 / 5 |
-| `v2-log` | 52 | 0 / 5 |
-| `v3-response` | 39 | 5 / 5 |
+| `v1-raw` | 11 | 4 / 7 |
+| `v2-log` | 52 | 4 / 7 |
+| `v3-response` | 39 | 7 / 7 |
 
 ## 3. What the comparison actually showed
 
 **The input-word channels are the problem, and they are most of it.** Section 6 of
 the brief lists an input-word character-class profile - extension, depth, casing,
-entropy - as a candidate encoding, so `v2-log` includes one. It is the worst of the
-three on every surface, and the reason is measurable rather than mysterious: on the
-wildcard host, **100% of the variance inside the soft-404 cluster comes from
-the `word.*` channels alone**.
+entropy - as a candidate encoding, so `v2-log` includes one. **It is worse than the
+naive raw encoding on five of seven surfaces despite having five times as many
+channels**, and the reason is measurable rather than mysterious: on the wildcard
+host, **100% of the variance inside the soft-404 cluster comes from the
+`word.*` channels alone**.
 
 In hindsight it could not have been otherwise. The fuzzed word is different on every
 single request - that is what fuzzing is - so encoding it guarantees every response
@@ -90,14 +117,27 @@ single-pass, so a hit at position 3 is scored before any baseline exists and its
 z-scored channels are all still returning "no opinion". The hits are now scattered
 through the list by seeded shuffle.
 
+**Several noise populations at once are not harder, they are just more of the
+same.** `bench-mixed` answers unknown words from four populations - an HTML 404,
+a login redirect, a JSON 403 and a 200 'no results' page - in roughly
+55/25/10/10 proportion. Each collapses to a spread of 0.014-0.025 while the four
+sit 1.5-2.2 apart, so the encoding treats them as four dense regions rather than
+one smeared one. Its hardest hit still clears the gate at 19.8x, and that
+hit shares its status code with the population it is hiding in and differs from
+it by under 4% in word count.
+
+This is the surface that exposed the measurement error above, and it is worth
+separating the two: the encoder always handled several populations correctly, and
+the metric could not say so.
+
 ## 4. Honest limitations of this result
 
 - **The corpus is synthetic and small.** Five surfaces, 1,998 requests each, three of
   them served by a target written to contain exactly the scenarios being tested. That
   is a fair test of whether the encoder has the properties claimed, and it is not
   evidence about real applications.
-- **One labelled hit per surface.** Enough for a separation ratio, not enough for a
-  precision figure. Ranking metrics arrive at M4 and need more labels than this.
+- **Six labelled hits per synthetic surface, one on each ffufme surface.** Enough
+  for a separation ratio and for M4's precision figures, not enough for tight ones.
 - **The separation ratios are not comparable to anything published.** They are a
   measure defined here to decide this gate.
 - **`v1-raw` and `v2-log` are kept, not deleted.** They are the evidence for why the
@@ -105,7 +145,7 @@ through the list by seeded shuffle.
 
 ## 5. Status
 
-`v3-response` clears the gate on 5 of 5 surfaces, including both properties the gate names. The channel set is
+`v3-response` clears the gate on 7 of 7 surfaces, including both properties the gate names. The channel set is
 versioned, every baseline will record the version that built it, and comparing scores
 across versions is meaningless by construction.
 
@@ -113,4 +153,4 @@ Next: M3, the connectome FlyHash, which runs fully offline.
 
 ---
 
-*Generated by flypaper 0.1.0 at commit `f7ceb78092bae13d20f261b631e5798c4a5d99da` **(dirty working tree - not reproducible)** | seed `20260911` on 2026-09-11T19:35:27+00:00.*
+*Generated by flypaper 0.1.0 at commit `3ce993af9626529bb7e5148e48a17949cf1b77e2` **(dirty working tree - not reproducible)** | seed `20260911` on 2026-09-11T21:46:04+00:00.*

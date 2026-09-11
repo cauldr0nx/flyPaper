@@ -102,6 +102,17 @@ SURFACES: dict[str, dict] = {
         "target": "bench/target/server.py (ours)",
         "authorization": "our own code, loopback only",
     },
+    "bench-mixed": {
+        "url": f"{BENCH}/mixed/FUZZ",
+        "hits": _bench_hits("/mixed/"),
+        "subtle_hits": _bench_subtle("/mixed/"),
+        "scenario": (
+            "four noise populations at once - an HTML 404, a login redirect, a JSON 403 "
+            "and a 200 'no results' page - with hits hiding inside them"
+        ),
+        "target": "bench/target/server.py (ours)",
+        "authorization": "our own code, loopback only",
+    },
     "bench-stable": {
         "url": f"{BENCH}/stable/FUZZ",
         "hits": _bench_hits("/stable/"),
