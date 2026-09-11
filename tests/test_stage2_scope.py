@@ -265,7 +265,8 @@ def test_non_http_schemes_are_refused(tmp_path):
 
 
 def test_paths_in_a_scope_file_are_rejected_loudly(tmp_path):
+    """A path-scoped asset must not be quietly widened to its whole host."""
     path = tmp_path / "bad.txt"
     path.write_text("example.com/only/this/path\n")
-    with pytest.raises(ValueError, match="not a host pattern"):
+    with pytest.raises(ValueError, match="wider than the scope says"):
         Scope.from_file(path)

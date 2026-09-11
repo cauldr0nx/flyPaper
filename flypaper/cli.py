@@ -264,6 +264,39 @@ def cmd_baselines(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scope(args: argparse.Namespace) -> int:
+    """Convert a program's published scope table into a scope file, never widening it."""
+    from flypaper.stage2.program_scope import convert_program_scope
+
+    report = convert_program_scope(args.source)
+    print(f"flypaper: {report.summary()}", file=sys.stderr)
+
+    if args.explain or not args.out:
+        for identifier, asset_type, why in report.skipped:
+            print(f"  skipped  {identifier}  [{asset_type or '-'}]  {why}", file=sys.stderr)
+
+    if not report.patterns:
+        print(
+            "flypaper: nothing eligible and addressable in that table; refusing to write a "
+            "scope file that authorises nothing.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.out:
+        report.write(args.out, source=str(args.source))
+        print(f"flypaper: wrote {args.out}", file=sys.stderr)
+        print(
+            "flypaper: check it against the program's own page before pointing anything at "
+            "it. This is a convenience, not an authorisation.",
+            file=sys.stderr,
+        )
+    else:
+        for pattern in report.patterns:
+            print(pattern)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fly",
@@ -425,6 +458,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     taste.add_argument("--channel-set", default=CHANNEL_SET_VERSION)
     taste.set_defaults(func=cmd_taste)
+
+    scope = sub.add_parser(
+        "scope",
+        help="convert a program scope export into a scope file for `fly taste`",
+        description=(
+            "Reads a bug bounty program's structured scope export and writes the host "
+            "patterns it authorises. Drops assets the program marks ineligible, drops asset "
+            "types that are not web hosts, and SKIPS path-scoped assets rather than "
+            "widening them to their host. Everything dropped is reported."
+        ),
+    )
+    scope.add_argument("source", help="the program's scope export (CSV)")
+    scope.add_argument("--out", help="write a scope file here instead of printing patterns")
+    scope.add_argument("--explain", action="store_true", help="list every dropped asset and why")
+    scope.set_defaults(func=cmd_scope)
 
     return parser
 
