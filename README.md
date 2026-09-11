@@ -34,7 +34,8 @@ up in `reports/` and stopped on, never loosened by moving the threshold.
 | M6 | Ergonomics | passed — [reports/m6-ergonomics.md](reports/m6-ergonomics.md) |
 | M7 | Adaptive foraging, delayed reward | not started |
 
-Two benchmarks sit outside the milestone sequence:
+Three benchmarks sit outside the milestone sequence:
+[reports/partitioned.md](reports/partitioned.md) measures per-host baselines,
 [reports/decay.md](reports/decay.md) measures whether temporal decay is worth having, and
 [reports/live-targets.md](reports/live-targets.md) runs the whole thing against real hosts.
 
@@ -61,6 +62,17 @@ input-word character profile — one of the candidate encodings — turned out t
 the within-cluster variance and destroy exactly the collapse the tool depends on, because the
 fuzzed word differs on every request by construction.
 
+**One baseline per host is the thing a filter cannot have.** ffuf derives one filter and
+applies it to the whole run; from its own tracker, on scanning several targets at once,
+*"would be impossible to put correct flag for each host"*. A Fly Bloom Filter is 2,045
+floats, so flypaper keeps one per host — and one per directory if the scan recursed, which
+is what feroxbuster gets from per-directory wildcard detection and ffuf has no equivalent
+for. On a 9,990-response sweep across five hosts, a shared baseline finds 20 of 27 hits and
+buries the worst at rank 6,762; one baseline per host finds all 27 by rank 33
+([reports/partitioned.md](reports/partitioned.md)). On a constructed worst case — each
+host's real page shaped exactly like the other host's noise — the shared baseline scores
+both hits at 0.0000, which is not a low rank but no signal at all.
+
 **It behaves the same on real targets.** Seven hosts across three public bug bounty
 programs, 1,022 requests ([reports/live-targets.md](reports/live-targets.md)). The encoder
 collapsed 404 walls of 21 b, 13 kB and 33 kB with no configuration and put the structurally
@@ -84,6 +96,12 @@ There is deliberately no hosted CI workflow yet; `make ci` is the gate.
 ```bash
 # live, straight off the pipe
 ffuf -mc all -json -u http://host/FUZZ -w list.txt | fly rank
+
+# a sweep across many hosts, one baseline each - the case ffuf cannot handle
+ffuf -mc all -json -u https://HOST/FUZZ -w list.txt:FUZZ -w hosts.txt:HOST | fly rank --per host
+
+# a recursive scan, one baseline per directory
+ffuf -mc all -json -recursion -u http://host/FUZZ -w list.txt | fly rank --per dir
 
 # a completed results file, scored in two passes
 fly rank results.json --top 20

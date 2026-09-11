@@ -18,7 +18,7 @@ import numpy as np
 
 from flypaper.rank.score import Scored
 
-__all__ = ["Terminal", "write_jsonl"]
+__all__ = ["PartitionedGate", "Terminal", "write_jsonl"]
 
 # Colour only when stdout is a terminal; a pipe gets clean text.
 _RESET = "\033[0m"
@@ -83,6 +83,36 @@ class RollingPercentile:
         return novelty >= cutoff and novelty > 0.0
 
 
+class PartitionedGate:
+    """One self-calibrating cutoff per partition.
+
+    A single gate across a multi-host scan is decided by whichever host is noisiest, and
+    the quiet hosts then never surface anything. Each host gets its own cutoff for the same
+    reason each gets its own baseline: "unusual" is a statement about a target, not about a
+    scan.
+    """
+
+    def __init__(self, percentile: float = 99.5, window: int = 1000, minimum: int = 200):
+        self.percentile = percentile
+        self.window = window
+        self.minimum = minimum
+        self._gates: dict[str, RollingPercentile] = {}
+
+    def _gate(self, key: str) -> RollingPercentile:
+        if key not in self._gates:
+            self._gates[key] = RollingPercentile(self.percentile, self.window, self.minimum)
+        return self._gates[key]
+
+    def observe(self, key: str, novelty: float) -> None:
+        self._gate(key).observe(novelty)
+
+    def passes(self, key: str, novelty: float) -> bool:
+        return self._gate(key).passes(novelty)
+
+    def __len__(self) -> int:
+        return len(self._gates)
+
+
 class Terminal:
     """Live output, readable while a scan runs.
 
@@ -104,10 +134,17 @@ class Terminal:
         percentile: float = 99.5,
         colour: bool | None = None,
         warmup: int = 0,
+        partitioned: bool = False,
     ):
         self.stream = stream or sys.stdout
         self.threshold = threshold
-        self.gate = RollingPercentile(percentile) if threshold is None else None
+        self.partitioned = partitioned
+        if threshold is not None:
+            self.gate = None
+        elif partitioned:
+            self.gate = PartitionedGate(percentile)
+        else:
+            self.gate = RollingPercentile(percentile)
         self.percentile = percentile
         self.colour = self.stream.isatty() if colour is None else colour
         self.warmup = warmup
@@ -139,21 +176,32 @@ class Terminal:
                 # Scored and learned from, but neither shown nor allowed to set the cutoff.
                 self.suppressed += 1
                 return
+        if not force and not scored.settled:
+            # Scored and learned from, but its partition has no baseline yet.
+            self.suppressed += 1
+            return
         if self.gate is not None:
-            self.gate.observe(scored.novelty)
+            if self.partitioned:
+                self.gate.observe(scored.partition, scored.novelty)
+            else:
+                self.gate.observe(scored.novelty)
         if not force:
             if self.threshold is not None:
                 if scored.novelty < self.threshold:
+                    return
+            elif self.partitioned:
+                if not self.gate.passes(scored.partition, scored.novelty):
                     return
             elif not self.gate.passes(scored.novelty):
                 return
         self.shown += 1
         colour, label = band(scored.novelty)
         r = scored.result
+        where = f"{scored.partition}  " if scored.partition else ""
         print(
             f"{self._paint(f'{scored.novelty:5.3f}', colour)} {label:8} "
             f"[Status: {r.status}, Size: {r.length}, Words: {r.words}, Lines: {r.lines}, "
-            f"Duration: {r.duration_ms:.0f}ms] {r.word}",
+            f"Duration: {r.duration_ms:.0f}ms] {where}{r.word}",
             file=self.stream,
             flush=True,
         )

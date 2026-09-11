@@ -17,8 +17,9 @@ which is not the same as *this response is interesting*.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 import numpy as np
 
@@ -31,7 +32,15 @@ from flypaper.brain.flyhash import (
 from flypaper.encode import CHANNEL_SET_VERSION, Encoder
 from flypaper.ingest.ffuf import FfufResult
 
-__all__ = ["DEFAULTS", "Ranker", "Scored", "rank"]
+__all__ = [
+    "DEFAULTS",
+    "PARTITIONS",
+    "PartitionedRanker",
+    "Ranker",
+    "Scored",
+    "partition_key",
+    "rank",
+]
 
 #: Defaults, each traceable to a paper or a measurement. See bench/thresholds.yaml.
 DEFAULTS = {
@@ -40,6 +49,66 @@ DEFAULTS = {
     "sparsity": 0.05,  # published: ~95% of the tag is zero
     "learning_rate": 0.4,
 }
+
+
+def _host_of(result: FfufResult) -> str:
+    if result.host:
+        return result.host
+    try:
+        return urlsplit(result.url).netloc
+    except ValueError:
+        return ""
+
+
+def _dir_of(result: FfufResult) -> str:
+    """Host plus the base the scan was fuzzing, with the fuzzed word removed.
+
+    ffuf's `-recursion` walks into every directory it finds, and a directory usually has its
+    own idea of what "not found" looks like - a different error template, a different
+    framework, sometimes a different server. Treating a recursive scan as one population
+    blurs all of them together. This is the partition feroxbuster gets from detecting
+    wildcards per directory; here it falls out of keeping one filter per key.
+
+    The word is stripped rather than the path simply being split on its last slash, because
+    **wordlists contain slashes**. `admin/backup.php` against `/cd/basic/` would otherwise
+    be filed under `/cd/basic/admin/` - a partition of one, which then scores 1.000 because
+    it has never seen anything else. Measured, on a real scan, before this was fixed.
+    """
+    url = result.url
+    word = result.word
+    if word and url.endswith(word):
+        base = url[: -len(word)]
+    else:
+        try:
+            path = urlsplit(url).path or "/"
+        except ValueError:
+            return _host_of(result) + "/"
+        base = path.rsplit("/", 1)[0] + "/"
+    try:
+        parts = urlsplit(base)
+        path = parts.path or "/"
+    except ValueError:
+        return _host_of(result) + "/"
+    if not path.endswith("/"):
+        path = path.rsplit("/", 1)[0] + "/"
+    return f"{_host_of(result)}{path}"
+
+
+#: How to split a stream into populations that each deserve their own baseline.
+PARTITIONS: dict[str, Callable[[FfufResult], str]] = {
+    "none": lambda result: "",
+    "host": _host_of,
+    "dir": _dir_of,
+}
+
+
+def partition_key(result: FfufResult, how: str) -> str:
+    try:
+        return PARTITIONS[how](result)
+    except KeyError:
+        raise ValueError(
+            f"unknown partition {how!r}; known: {', '.join(sorted(PARTITIONS))}"
+        ) from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +120,11 @@ class Scored:
     position: int
     channel_set: str
     projection: str
+    partition: str = ""
+    #: Whether this result's partition had seen enough to have an opinion. A host or
+    #: directory seen a handful of times has no baseline, so everything in it looks novel;
+    #: unsettled results are scored but not surfaced.
+    settled: bool = True
 
     @property
     def url(self) -> str:
@@ -71,6 +145,8 @@ class Scored:
             "duration_ms": round(r.duration_ms, 3),
             "ffufhash": r.ffufhash,
             "position": self.position,
+            "partition": self.partition,
+            "settled": self.settled,
             "channel_set": self.channel_set,
             "projection": self.projection,
         }
@@ -196,6 +272,140 @@ class Ranker:
         return scored
 
 
+@dataclass
+class PartitionedRanker:
+    """One baseline per host, or per directory, learned as the stream arrives.
+
+    This is the thing ffuf cannot do and says so. From its own issue tracker, on scanning
+    several targets at once: *"would be impossible to put correct flag for each host"* -
+    because `-fs` and `-ac` derive one filter and apply it to everything. Point a scan at
+    fifty hosts and you get one baseline for fifty different ideas of "not found"; point it
+    at one host with `-recursion` and you get one baseline for every directory's error page.
+
+    A Bloom filter is 2,045 floats. Keeping one per host costs 16 kB each, so the answer is
+    simply to keep one per host - and per directory, if the scan recursed. The projection is
+    shared across partitions, so a score means the same thing in all of them and they can be
+    compared; only the learned baseline differs, which is the part that should.
+
+    Partitions with barely any traffic are the failure case: a host seen five times has no
+    baseline, and everything in it would look novel. `min_observations` holds those back
+    rather than flooding the operator with the first few responses from every host.
+    """
+
+    how: str = "host"
+    min_observations: int = 25
+    channel_set: str = CHANNEL_SET_VERSION
+    projection: str = "random"
+    n_kc: int = DEFAULTS["n_kc"]
+    fan_in: int = DEFAULTS["fan_in"]
+    sparsity: float = DEFAULTS["sparsity"]
+    learning_rate: float = DEFAULTS["learning_rate"]
+    decay_halflife: float | None = None
+    seed: int = 0
+    time_base: str = "records"
+
+    flyhash: FlyHash = field(init=False)
+    encoders: dict[str, Encoder] = field(init=False, default_factory=dict)
+    filters: dict[str, FlyBloomFilter] = field(init=False, default_factory=dict)
+    counts: dict[str, int] = field(init=False, default_factory=dict)
+    n_scored: int = field(init=False, default=0)
+
+    def __post_init__(self) -> None:
+        if self.how not in PARTITIONS:
+            raise ValueError(
+                f"unknown partition {self.how!r}; known: {', '.join(sorted(PARTITIONS))}"
+            )
+        if self.projection != "random":
+            raise ValueError(
+                "partitioned ranking shares one projection across partitions, so only the "
+                "random projection is supported; use Ranker for the connectome path"
+            )
+        probe = Encoder(self.channel_set)
+        rng = np.random.default_rng(self.seed)
+        self.flyhash = FlyHash(
+            random_projection(len(probe), self.n_kc, self.fan_in, rng=rng),
+            sparsity=self.sparsity,
+        )
+
+    @property
+    def partitions(self) -> int:
+        return len(self.filters)
+
+    def _for(self, key: str) -> tuple[Encoder, FlyBloomFilter]:
+        if key not in self.filters:
+            self.encoders[key] = Encoder(self.channel_set)
+            self.filters[key] = FlyBloomFilter(
+                self.flyhash.n_kc,
+                learning_rate=self.learning_rate,
+                decay_halflife=self.decay_halflife,
+            )
+            self.counts[key] = 0
+        return self.encoders[key], self.filters[key]
+
+    def _when(self) -> float | None:
+        return time.time() if self.time_base == "wallclock" else None
+
+    def score(self, result: FfufResult) -> Scored:
+        key = partition_key(result, self.how)
+        encoder, filt = self._for(key)
+        vector = encoder.encode(result)
+        tag = self.flyhash.tag_valued(vector[None, :])
+        novelty = float(filt.observe(tag, when=self._when())[0])
+        self.counts[key] += 1
+
+        scored = Scored(
+            result=result,
+            novelty=novelty,
+            position=self.n_scored,
+            channel_set=self.channel_set,
+            projection=self.projection,
+            partition=key,
+            settled=self.counts[key] >= self.min_observations,
+        )
+        self.n_scored += 1
+        return scored
+
+    def settled(self, key: str) -> bool:
+        """Whether a partition has seen enough to have an opinion worth showing."""
+        return self.counts.get(key, 0) >= self.min_observations
+
+    def stream(self, results: Iterable[FfufResult]) -> Iterator[Scored]:
+        for result in results:
+            yield self.score(result)
+
+    def observe_only(self, results: Iterable[FfufResult]) -> None:
+        for result in results:
+            key = partition_key(result, self.how)
+            encoder, filt = self._for(key)
+            filt.observe(
+                self.flyhash.tag_valued(encoder.encode(result)[None, :]), when=self._when()
+            )
+            self.counts[key] += 1
+
+    def score_against_baseline(self, result: FfufResult) -> Scored:
+        key = partition_key(result, self.how)
+        encoder, filt = self._for(key)
+        tag = self.flyhash.tag_valued(encoder.encode(result)[None, :])
+        scored = Scored(
+            result=result,
+            novelty=float(filt.score_excluding(tag)[0]),
+            position=self.n_scored,
+            channel_set=self.channel_set,
+            projection=self.projection,
+            partition=key,
+            settled=self.counts.get(key, 0) >= self.min_observations,
+        )
+        self.n_scored += 1
+        return scored
+
+    def summary(self) -> str:
+        settled = sum(1 for k in self.filters if self.settled(k))
+        return (
+            f"{self.partitions} {self.how} partition(s), {settled} with at least "
+            f"{self.min_observations} responses"
+        )
+
+
 def rank(results: Iterable[FfufResult], *, passes: int = 2, **kwargs) -> list[Scored]:
     """Score everything and return it most-novel first.
 
@@ -214,16 +424,26 @@ def rank(results: Iterable[FfufResult], *, passes: int = 2, **kwargs) -> list[Sc
     if passes not in (1, 2):
         raise ValueError("passes must be 1 (live) or 2 (offline)")
 
+    how = kwargs.pop("partition", "none")
+    build = (
+        (lambda: PartitionedRanker(how=how, **kwargs))
+        if how != "none"
+        else (lambda: Ranker(**kwargs))
+    )
+
     if passes == 1:
-        ranker = Ranker(**kwargs)
+        ranker = build()
         scored = list(ranker.stream(results))
     else:
         results = list(results)
-        ranker = Ranker(**kwargs)
+        ranker = build()
         ranker.observe_only(results)
         # A fresh encoder would re-derive running statistics from scratch; reuse the settled
         # one so the second pass encodes against the whole run, as it scores against it.
         scored = [ranker.score_against_baseline(r) for r in results]
 
-    scored.sort(key=lambda s: (-s.novelty, s.position))
+    # Unsettled partitions sort last however novel they look: a partition of three
+    # responses has no baseline, and its scores are an artifact of that rather than a
+    # statement about the target.
+    scored.sort(key=lambda s: (not s.settled, -s.novelty, s.position))
     return scored

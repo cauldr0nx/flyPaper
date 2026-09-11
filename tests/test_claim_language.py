@@ -63,6 +63,9 @@ def test_no_detection_claims(path):
         # A URL is not a claim, and ffuf's issue tracker is cited by number.
         stripped = re.sub(r"https?://\S+", "", sentence)
         stripped = re.sub(r"\bffuf issue #\d+\b", "", stripped, flags=re.IGNORECASE)
+        # "issue tracker" is where ffuf's own limitations are recorded, not a claim about a
+        # response. Stripped rather than allowed as a denial, since it is neither.
+        stripped = re.sub(r"\bissues? tracker\b", "", stripped, flags=re.IGNORECASE)
         match = BANNED.search(stripped)
         assert not match, (
             f"{path.relative_to(REPO_ROOT)} says {match.group(0)!r} in: {sentence[:120]!r}\n"

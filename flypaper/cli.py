@@ -74,16 +74,25 @@ def cmd_rank(args: argparse.Namespace) -> int:
         "circuit_path": args.circuit,
         "decay_halflife": args.decay_halflife,
     }
+    if args.per != "none":
+        if args.projection != "random":
+            raise SystemExit("--per needs the random projection; drop --projection connectome")
+        kwargs.pop("circuit_path")
+        kwargs.pop("projection")
 
     if args.baseline:
         return _rank_with_baseline(args, source, kwargs)
 
     if args.file and not args.live:
-        scored = rank(source, passes=2, **kwargs)
+        scored = rank(source, passes=2, partition=args.per, **kwargs)
         if args.jsonl:
             write_jsonl(scored[: args.top] if args.top else scored)
             return 0
-        term = Terminal(threshold=args.threshold, percentile=args.percentile)
+        term = Terminal(
+            threshold=args.threshold,
+            percentile=args.percentile,
+            partitioned=args.per != "none",
+        )
         term.header(args.channel_set, args.projection)
         if args.top:
             # An explicit budget is a request for that many results, not a second filter.
@@ -401,6 +410,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     ranker.add_argument("--top", type=int, default=None, help="print at most this many results")
+    ranker.add_argument(
+        "--per",
+        choices=("none", "host", "dir"),
+        default="none",
+        help=(
+            "keep a separate baseline per host, or per directory. This is the case ffuf "
+            "cannot handle - one -fs or -ac filter cannot describe fifty hosts, or every "
+            "directory a recursive scan walks into. Costs 16 kB per partition."
+        ),
+    )
     ranker.add_argument("--jsonl", action="store_true", help="emit JSONL for piping onward")
     ranker.add_argument(
         "--baseline",
