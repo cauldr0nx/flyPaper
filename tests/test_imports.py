@@ -40,16 +40,11 @@ def test_every_subpackage_is_present():
 
 def test_unbuilt_milestones_raise_rather_than_return_garbage():
     """A stub must fail loudly. Silently returning nothing is how bad results get shipped."""
-    from flypaper.brain import bloom, extract, flyhash
     from flypaper.rank import report, score
     from flypaper.stage2 import body_features, refetch
     from flypaper.store import db
 
     for call in (
-        extract.extract,
-        flyhash.RandomProjectionFlyHash,
-        flyhash.ConnectomeFlyHash,
-        bloom.FlyBloomFilter,
         score.score,
         report.render,
         refetch.refetch,
@@ -58,6 +53,19 @@ def test_unbuilt_milestones_raise_rather_than_return_garbage():
     ):
         with pytest.raises(NotImplementedError):
             call()
+
+
+def test_the_brain_is_built():
+    """M3 is done; the circuit, the hash and the filter are real."""
+    import numpy as np
+
+    from flypaper.brain.bloom import FlyBloomFilter
+    from flypaper.brain.flyhash import FlyHash, random_projection
+
+    fh = FlyHash(random_projection(55, 2045, 6, rng=np.random.default_rng(0)))
+    tag = fh.tag(np.random.default_rng(1).random((2, 55)).astype(np.float32))
+    assert tag.shape == (2, 2045)
+    assert FlyBloomFilter(2045).observe(tag)[0] > 0.9
 
 
 def test_the_encoder_is_built():

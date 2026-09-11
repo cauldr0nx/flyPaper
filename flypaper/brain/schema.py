@@ -61,14 +61,32 @@ W_PRE = "body_pre"
 W_POST = "body_post"
 W_WEIGHT = "weight"
 
-# --- the olfactory circuit ---------------------------------------------------------------
+# --- the olfactory circuit -----------------------------------------------------------------
 
-# NOT RESOLVED YET. M3 resolves the projection neuron, Kenyon cell and MBON-alpha'3
-# populations by annotation, records the near-miss type names a prefix match would have
-# swallowed, and writes the measured statistics against the published ~50 / ~2,000 / ~95%.
-# If MaleCNS annotation does not cleanly identify alpha'3, the substitute is documented in
-# reports/m3-flyhash-benchmark.md rather than quietly chosen here.
-CIRCUIT_TYPES: tuple[str, ...] = ()
+# MaleCNS annotates these populations directly in the `class` column, so nothing here is a
+# guess at which cells are which.
+CLASS_KENYON_CELL = "Kenyon_Cell"
+CLASS_ALPN = "ALPN"  # antennal lobe projection neurons
+CLASS_MBON = "MBON"
+CLASS_OLFACTORY = "olfactory"  # olfactory receptor neurons
+CLASS_DAN = "DAN"  # dopaminergic neurons - the reinforcement channel, M7
+
+# MaleCNS names MBONs numerically (MBON01..MBON35), not by compartment, so the alpha'3
+# identity is not readable from `type`. It *is* readable from `instance`, which carries the
+# compartment in parentheses - `MBON16(a'3ap)`, `MBON17(a'3m)`. The Fly Bloom Filter paper
+# reads novelty off MBON-alpha'3, which in Aso et al. 2014 nomenclature is MBON-a'3ap and
+# MBON-a'3m; those are exactly these two types.
+#
+# The compartment is matched on `instance` rather than assumed from a remembered type
+# number, and the adjacent cells that only partly innervate alpha'3 are listed separately
+# rather than folded in. See reports/m3-flyhash-benchmark.md.
+MBON_ALPHA3_INSTANCE = r"\(a'3(?:ap|m)\)"
+MBON_ALPHA3_ADJACENT_INSTANCE = r"\(a'3a\)|\(a'2a'3\)"
+
+# A uniglomerular antennal-lobe PN's type begins with its glomerulus. Multiglomerular PNs
+# and central-brain types do not name one, and are excluded from the receptor channels.
+NON_GLOMERULAR_PREFIXES = ("CB", "MZ")
+MULTIGLOMERULAR_MARKERS = ("+",)
 
 
 def raw_path(filename: str) -> Path:
