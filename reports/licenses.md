@@ -81,7 +81,32 @@ still there.
 | [eonsystemspbc/fly-brain](https://github.com/eonsystemspbc/fly-brain) | **GPL-2.0-or-later** | **Excluded.** Never vendored, never copied. Confirmed GPL-2.0 on 2026-09-11. A test asserts this row keeps its exclusion marker. |
 | flyDash (same author, `~/dev/flyDash`) | MIT | The MaleCNS fetch, manifest and table-loading pipeline is ported from it. Each ported module says so in its docstring. |
 
-## 7. Runtime and development dependencies
+## 7. Vendored in the dashboard
+
+Two third-party assets are committed to this repository rather than fetched, so the
+dashboard works with no network connection. Both are permissive and both keep their notices.
+
+| Asset | Path | License | Handling |
+|---|---|---|---|
+| three.js | `flypaper/web/static/three.module.js` | MIT, Copyright 2010-2023 Three.js Authors | Vendored unmodified; the `@license` header is retained in the file. |
+| NeuroMechFly v2 body mesh | `flypaper/web/static/fly.bin`, `fly.json` | Apache-2.0, NeLy-EPFL/flygym | Vendored as a quantised vertex buffer derived from the published meshes. `fly.json` carries the source and citation inline. |
+
+The NeuroMechFly model is cited as Lobato-Rios et al., *Nature Methods*, 2024. It appears in
+the dashboard as anatomical staging: it is not simulated by anything in this project and is
+not spatially registered to the connectome coordinates, which is why it sits in a separate
+panel from the measured synapse cloud and is labelled as such on screen.
+
+## 8. Benchmark datasets
+
+Fetched on demand by `bench/datasets.py` into `data/benchmarks/`, verified against pinned
+SHA256, and never committed.
+
+| Dataset | License | Attribution |
+|---|---|---|
+| MNIST | CC BY-SA 3.0 | Yann LeCun and Corinna Cortes |
+| Fashion-MNIST | MIT | Zalando SE |
+
+## 9. Runtime and development dependencies
 
 | Package | License |
 |---|---|
@@ -98,7 +123,7 @@ still there.
 All permissive and compatible with MIT distribution. No copyleft dependency is present, and
 none should be added without revisiting this document.
 
-## 8. What is not here
+## 10. What is not here
 
 No GPL code. No vendored third-party source of any license. No committed bulk data, no
 committed corpora, and no response bodies anywhere in the tree.

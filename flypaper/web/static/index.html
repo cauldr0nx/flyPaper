@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>flypaper / novelty</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">flypaper</div>
+  <nav class="rail">
+    <span class="live" id="live-dot">&#9679; REPLAY</span>
+    <span class="sep">MaleCNS v1.0</span>
+    <span class="sep">FlyHash</span>
+    <span class="sep">Fly&nbsp;Bloom&nbsp;Filter</span>
+  </nav>
+</header>
+
+<main class="frame">
+  <span class="corner tl"></span><span class="corner tr"></span>
+  <span class="corner bl"></span><span class="corner br"></span>
+
+  <section class="titleblock">
+    <div>
+      <h1>Novelty ranking <span class="dim">/ olfactory circuit</span></h1>
+      <p class="sub" id="subtitle">loading&hellip;</p>
+    </div>
+    <div class="titlemeta">
+      <div id="run-label" class="mono dim">&mdash;</div>
+      <button id="btn-play" class="btn">&#9646;&#9646; pause</button>
+    </div>
+  </section>
+
+  <!-- ─── the desk ─────────────────────────────────────────────────────── -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Workstation</h2>
+      <div class="panel-meta mono dim">anatomical model &middot; staging, not simulated</div>
+    </div>
+    <div class="deskwrap">
+      <canvas id="desk"></canvas>
+      <div class="overlay-tl mono">
+        <div><span class="k">response</span> <span id="d-word">&mdash;</span></div>
+        <div><span class="k">novelty</span> <span id="d-novelty">&mdash;</span></div>
+        <div><span class="k">surfaced</span> <span id="d-shown">0</span></div>
+      </div>
+      <div class="overlay-br mono dim">drag to orbit &middot; wheel to zoom</div>
+    </div>
+    <p class="note">
+      The body is the published <b>NeuroMechFly v2</b> model (Lobato-Rios et al.,
+      <em>Nature Methods</em> 2024; Apache-2.0) &mdash; a real <em>Drosophila</em>
+      reconstructed from microscopy. It is <b>staging, not a simulation</b>: nothing about
+      the pose is computed from the circuit, and the model is not spatially registered to
+      the connectome. The text on the monitor is real: those are the log lines the run
+      actually produced.
+    </p>
+  </section>
+
+  <!-- ─── the mushroom body ────────────────────────────────────────────── -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Mushroom body &mdash; measured</h2>
+      <select id="cloud-mode" class="select mono">
+        <option value="both">calyx + &alpha;&prime;3</option>
+        <option value="calyx">calyx (PN &rarr; KC)</option>
+        <option value="alpha3">&alpha;&prime;3 (KC &rarr; MBON)</option>
+        <option value="kc">Kenyon cells</option>
+      </select>
+    </div>
+    <div class="cloudwrap">
+      <canvas id="cloud"></canvas>
+      <div class="overlay-tr mono" id="cloud-stats"></div>
+      <div class="overlay-bl mono dim">MaleCNS EM space &middot; &micro;m &middot; right hemisphere</div>
+    </div>
+    <div class="legend mono">
+      <span><i class="sw sw-calyx"></i>calyx synapse</span>
+      <span><i class="sw sw-a3"></i>&alpha;&prime;3 synapse <span class="dim">&mdash; the filter</span></span>
+      <span><i class="sw sw-kc"></i>Kenyon cell</span>
+      <span><i class="sw sw-fire"></i>firing now</span>
+    </div>
+    <p class="note">
+      Every point is a measured location. The <b>&alpha;&prime;3 synapses are the Bloom
+      filter</b>: each is one weight that a familiar response depresses, and the novelty
+      score is what the MBON reads off whatever is left. Points brighten when the current
+      response&rsquo;s tag selects the Kenyon cell that owns them.
+    </p>
+  </section>
+
+  <!-- ─── traces ───────────────────────────────────────────────────────── -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Responses &rarr; novelty</h2>
+      <div class="panel-meta mono dim" id="trace-meta">&mdash;</div>
+    </div>
+    <div class="traces">
+      <div class="trace">
+        <div class="trace-label mono">
+          <b>Novelty</b>
+          <span class="dim" id="t-novelty">&mdash;</span>
+        </div>
+        <canvas class="chart" id="chart-novelty"></canvas>
+      </div>
+      <div class="trace">
+        <div class="trace-label mono">
+          <b>Baseline saturation</b>
+          <span class="dim" id="t-sat">&mdash;</span>
+        </div>
+        <canvas class="chart" id="chart-sat"></canvas>
+      </div>
+      <div class="trace">
+        <div class="trace-label mono">
+          <b>Response size</b>
+          <span class="dim" id="t-size">&mdash;</span>
+        </div>
+        <canvas class="chart" id="chart-size"></canvas>
+      </div>
+    </div>
+    <div class="axis mono dim"><span id="ax-l">0</span><span id="ax-r">&mdash;</span></div>
+  </section>
+
+  <!-- ─── log ──────────────────────────────────────────────────────────── -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Stream</h2>
+      <div class="panel-meta mono dim">
+        <label><input type="checkbox" id="only-surfaced"> surfaced only</label>
+      </div>
+    </div>
+    <pre id="log" class="log mono"></pre>
+  </section>
+
+  <footer class="foot mono dim">
+    <span id="foot-prov">&mdash;</span>
+    <span>ranks, does not detect &mdash; a novel response is a statistical outlier</span>
+  </footer>
+</main>
+
+<div class="scrub">
+  <button id="btn-restart" class="btn">&#8635;</button>
+  <input type="range" id="scrub" min="0" max="100" value="0">
+  <span class="mono dim" id="scrub-label">0 / 0</span>
+  <select id="speed" class="select mono">
+    <option value="0.25">0.25&times;</option>
+    <option value="1" selected>1&times;</option>
+    <option value="4">4&times;</option>
+    <option value="16">16&times;</option>
+  </select>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

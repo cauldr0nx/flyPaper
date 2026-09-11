@@ -98,6 +98,32 @@ novel half-percent *for this target*, calibrated from the run itself.
 On a 1,998-response scan of a target whose every response carries a rotating CSRF token,
 that prints eight lines, and all eight are the planted hits.
 
+### The dashboard
+
+A page showing what the circuit is doing: the run's log on a monitor, the mushroom body's
+**measured** synapses lighting up as tags fire, and the novelty traces with the cutoff the
+run actually used.
+
+```bash
+python -m flypaper.web.export                     # circuit geometry (needs the MaleCNS tables)
+python -m flypaper.web.server --tailscale         # then open the printed address
+```
+
+It records a run from `bench/corpus/` on first start, so a capture has to exist. Standard
+library only, with a vendored three.js, so it works with no internet connection.
+
+`--tailscale` binds the tailnet interface, so the page is reachable from your other devices
+at `http://<machine>.<tailnet>.ts.net:8770/`. It is **never** `tailscale funnel`: nothing is
+published to the internet, and a test asserts that. For HTTPS on a name with no port number,
+`tailscale serve` needs rights it does not have by default — run `sudo tailscale set
+--operator=$USER` once, then `--tailscale` will set it up.
+
+Two panels, deliberately separate, because only one of them is data. The mushroom body is
+measured: every point is a location in MaleCNS EM space, and the α′3 synapses it lights are
+the Bloom filter's own weights. The workstation is staging: the fly is a real anatomical
+model but nothing about its pose is computed, and it is not spatially registered to the
+connectome. The page says so on the page.
+
 ### The connectome data
 
 The MaleCNS tables are needed from M3 onward, not before.
@@ -162,7 +188,11 @@ the MaleCNS data carries its own terms regardless of our code license. The full 
 | [fly_connectome_data_tutorial](https://github.com/sjcabs/fly_connectome_data_tutorial) (sjcabs) | orientation material | MIT | Read for method. |
 | [philshiu/Drosophila_brain_model](https://github.com/philshiu/Drosophila_brain_model) | whole-brain LIF model | MIT | Verified 2026-09-11 — the brief recorded this as unverified. Read for method. |
 | [eonsystemspbc/fly-brain](https://github.com/eonsystemspbc/fly-brain) | adjacent implementation | GPL-2.0-or-later | **Excluded.** Never vendored, never copied into this MIT repository. |
-| flyDash (same author) | source of the MaleCNS fetch and load pipeline | MIT | Ported with attribution in each ported module's docstring. |
+| flyDash (same author) | source of the MaleCNS fetch and load pipeline, and the dashboard's fly mesh | MIT | Ported with attribution in each ported module's docstring. |
+| [three.js](https://github.com/mrdoob/three.js) | 3D rendering in the dashboard | MIT | **Vendored** at `flypaper/web/static/three.module.js` so the dashboard works offline. Copyright notice retained in the file. |
+| [NeuroMechFly v2](https://github.com/NeLy-EPFL/flygym) (Lobato-Rios et al., *Nature Methods* 2024) | the anatomical fly body in the dashboard | Apache-2.0 | **Vendored** as a quantised mesh at `flypaper/web/static/fly.bin`. Shown as staging only: not simulated, and not spatially registered to the connectome. |
+| [MNIST](https://yann.lecun.com/exdb/mnist/) (LeCun & Cortes) | M3 benchmark dataset | CC BY-SA 3.0 | Fetched on demand to `data/benchmarks/`, never committed. |
+| [Fashion-MNIST](https://github.com/zalandoresearch/fashion-mnist) (Zalando SE) | M3 benchmark dataset | MIT | Fetched on demand to `data/benchmarks/`, never committed. |
 
 | Package | License |
 |---|---|

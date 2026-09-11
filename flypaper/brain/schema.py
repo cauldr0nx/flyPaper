@@ -27,6 +27,7 @@ NEUROTRANSMITTERS = "body-neurotransmitters-male-cns-v1.0.feather"
 WEIGHTS = "connectome-weights-male-cns-v1.0-minconf-0.5.feather"
 WEIGHTS_TRACED = "connectome-weights-male-cns-v1.0-minconf-0.5-traced-only.feather"
 SYN_PARTNERS = "syn-partners-male-cns-v1.0-minconf-0.5.feather"
+SYN_PARTNERS_TRACED = "syn-partners-male-cns-v1.0-minconf-0.5-traced-only.feather"
 BODY_STATS = "body-stats-male-cns-v1.0-minconf-0.5.feather"
 
 # --- body-annotations ------------------------------------------------------------------

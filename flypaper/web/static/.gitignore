@@ -1,0 +1,5 @@
+# Recorded runs are derived from a corpus and regenerate in seconds; the server records
+# one on first start if it is missing. The anatomy export is committed instead, because
+# regenerating it needs the 31 GB MaleCNS tables and without it the dashboard cannot run.
+run.json
+*.run.json
