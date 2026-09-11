@@ -54,7 +54,11 @@
       reconstructed from microscopy. It is <b>staging, not a simulation</b>: nothing about
       the pose is computed from the circuit, and the model is not spatially registered to
       the connectome. The text on the monitor is real: those are the log lines the run
-      actually produced.
+      actually produced. It startles when a response clears the cutoff and is surfaced
+      &mdash; <b>that trigger is the run&rsquo;s own decision, but the movement is
+      invented</b>, because nothing here models a body to compute one from. Read it as a
+      notification. Surfacing is rare (9 times in this run), so use
+      <span class="mono">&#8677; next surfaced</span> to catch one.
     </p>
   </section>
 
@@ -138,7 +142,8 @@
 </main>
 
 <div class="scrub">
-  <button id="btn-restart" class="btn">&#8635;</button>
+  <button id="btn-restart" class="btn" title="restart">&#8635;</button>
+  <button id="btn-next" class="btn" title="jump to the next surfaced response">&#8677; next surfaced</button>
   <input type="range" id="scrub" min="0" max="100" value="0">
   <span class="mono dim" id="scrub-label">0 / 0</span>
   <select id="speed" class="select mono">

@@ -130,7 +130,7 @@ export async function initDesk(canvas) {
       keys.push(k);
     }
   }
-  keyboard.position.set(-0.7, 0.15, 0.72);
+  keyboard.position.set(-0.1, 0.15, 0.58);
   root.add(keyboard);
 
   /* ── the animal ───────────────────────────────────────────────────── */
@@ -145,6 +145,7 @@ export async function initDesk(canvas) {
   const flyGroup = new THREE.Group();
   const box = new THREE.Box3();
   const animated = {};
+  const centroids = {};
   for (const part of manifest.groups) {
     const positions = new Float32Array(part.count * 3);
     for (let i = 0; i < part.count * 3; i += 1) {
@@ -161,6 +162,12 @@ export async function initDesk(canvas) {
       opacity: part.name.startsWith('wing') ? 0.2 : 1,
       side: THREE.DoubleSide,
     });
+    let cx = 0, cy = 0, cz = 0;
+    for (let i = 0; i < part.count; i += 1) {
+      cx += positions[i * 3]; cy += positions[i * 3 + 1]; cz += positions[i * 3 + 2];
+    }
+    centroids[part.name] = new THREE.Vector3(cx, cy, cz).divideScalar(Math.max(part.count, 1));
+
     const mesh = new THREE.Mesh(geometry, material);
     if (part.pivot) {
       const [px, py, pz] = part.pivot;
@@ -182,11 +189,27 @@ export async function initDesk(canvas) {
   flyPivot.add(flyGroup);
 
   const flyRoot = new THREE.Group();
-  const fit = 3.3 / extent;
+  const fit = 4.3 / extent;
   flyRoot.scale.setScalar(fit);
   flyRoot.add(flyPivot);
-  flyRoot.position.set(-1.05, 0.36, 1.5);
-  flyRoot.rotation.y = Math.PI - 0.30;   // three-quarter to the screen
+  const FLY_HOME = new THREE.Vector3(-0.85, 0.46, 1.02);
+  flyRoot.position.copy(FLY_HOME);
+
+  // Point it at the monitor by measuring which way the animal faces rather than by
+  // guessing an angle: the head is where the eyes are, so eye centroid minus body centroid
+  // is the anterior axis. Derived this way it stays correct if the mesh is ever re-exported
+  // in a different orientation.
+  const anterior = (centroids.eye && centroids.body)
+    ? centroids.eye.clone().sub(centroids.body).normalize()
+    : new THREE.Vector3(1, 0, 0);
+  const facing = anterior.clone().applyEuler(new THREE.Euler(flyPivot.rotation.x, 0, 0));
+  const yawOf = (v) => Math.atan2(v.x, v.z);
+  const toMonitor = new THREE.Vector3(
+    screen.position.x - FLY_HOME.x, 0, screen.position.z - FLY_HOME.z,
+  );
+  // A few degrees off dead-on, so the camera still catches an eye rather than only a back.
+  const BASE_YAW = yawOf(toMonitor) - yawOf(facing) - 0.30;
+  flyRoot.rotation.y = BASE_YAW;
   root.add(flyRoot);
 
   const eyeGlow = new THREE.PointLight(0xff6a4a, 0.0, 4, 2);
@@ -271,7 +294,10 @@ export async function initDesk(canvas) {
   /* ── animation ────────────────────────────────────────────────────── */
 
   let typing = 0;      // decays after each response; drives the keys and the legs
-  let flash = 0;       // spikes when a response is surfaced
+  let flash = 0;       // spikes when a response is surfaced, and decays slowly for the glow
+  let startle = 0;     // the same event, but shaped for the body: sharp, then settling
+  let startleAge = 1e3;
+  let holdStartle = null;   // test hook: pin the pose so it can be photographed
 
   function pushLine(line) {
     lines.push(line);
@@ -279,7 +305,18 @@ export async function initDesk(canvas) {
     typing = 1;
   }
 
-  function surface() { flash = 1; }
+  /* A response has cleared the cutoff and been surfaced.
+   *
+   * The *trigger* is real - it is the run's own decision, the same one that put the line
+   * on the monitor. The *movement* is invented: a startle is what a fly does when something
+   * changes, and nothing in flypaper models a body to compute one from. Read it as a
+   * notification, not as a result.
+   */
+  function surface() {
+    flash = 1;
+    startle = 1;
+    startleAge = 0;
+  }
 
   let lastState = null;
   function setState(state) { lastState = state; }
@@ -299,7 +336,17 @@ export async function initDesk(canvas) {
     resize();
 
     typing = Math.max(0, typing - dt * 2.2);
-    flash = Math.max(0, flash - dt * 1.1);
+    flash = Math.max(0, flash - dt * 0.7);
+    startle = Math.max(0, startle - dt * 0.55);
+    startleAge += dt;
+    if (holdStartle !== null) {
+      // Software-rendered screenshots take seconds, by which time a real startle has
+      // decayed. Pinning it is the only way to photograph the pose.
+      startle = holdStartle;
+      startleAge = 0.025;
+    }
+    // A decaying oscillator: the jolt, then the settle. Much more legible than a fade.
+    const shudder = Math.sin(startleAge * 32) * Math.exp(-startleAge * 4.5) * startle;
 
     // Keys ripple while the stream is moving. Decoration, and the fly is not typing:
     // flypaper reads a stream someone else produced.
@@ -310,15 +357,32 @@ export async function initDesk(canvas) {
       k.material.color.setHex(press > 0.02 ? 0x2b4250 : 0x1d2732);
     });
 
-    // Forelegs rest on the keyboard and bob with the stream; wings settle.
+    // Middle legs bob with the stream, and extend hard on a startle.
     const bob = typing * 0.07;
-    if (animated.leg_mid_l) animated.leg_mid_l.rotation.z = -bob;
-    if (animated.leg_mid_r) animated.leg_mid_r.rotation.z = bob;
-    if (animated.wing_l) animated.wing_l.rotation.y = -0.16 + flash * 0.5;
-    if (animated.wing_r) animated.wing_r.rotation.y = 0.16 - flash * 0.5;
+    const kick = startle * 0.75 + shudder * 0.35;
+    if (animated.leg_mid_l) animated.leg_mid_l.rotation.z = -bob - kick;
+    if (animated.leg_mid_r) animated.leg_mid_r.rotation.z = bob + kick;
 
-    flyRoot.position.y = 0.34 + Math.sin(t * 1.6) * 0.012 + flash * 0.06;
-    eyeGlow.intensity = flash * 2.2;
+    // Wings snap out and up, then settle back over the abdomen.
+    const spread = startle * 1.15 + shudder * 0.45;
+    if (animated.wing_l) {
+      animated.wing_l.rotation.y = -0.16 - spread * 0.5;
+      animated.wing_l.rotation.z = spread;
+    }
+    if (animated.wing_r) {
+      animated.wing_r.rotation.y = 0.16 + spread * 0.5;
+      animated.wing_r.rotation.z = -spread;
+    }
+
+    // The whole animal rears, lifts and twitches toward the screen.
+    flyRoot.position.y =
+      FLY_HOME.y + Math.sin(t * 1.6) * 0.012 + startle * 0.14 + Math.abs(shudder) * 0.05;
+    flyRoot.position.z = FLY_HOME.z + startle * 0.16;   // rock back from the desk
+    flyRoot.rotation.x = -startle * 0.22 + shudder * 0.05;
+    flyRoot.rotation.y = BASE_YAW + shudder * 0.09;
+    flyRoot.rotation.z = shudder * 0.04;
+
+    eyeGlow.intensity = startle * 3.4 + flash * 0.8;
     glow.intensity = 1.2 + (lastState ? lastState.novelty * 1.6 : 0) + flash * 1.4;
     glow.color.setHex(flash > 0.25 ? 0xffd98a : 0x9fd8ff);
 
@@ -335,5 +399,17 @@ export async function initDesk(canvas) {
   }
   frame();
 
-  return { pushLine, surface, setState, setHeader, reset: () => { lines = []; } };
+  const api = {
+    pushLine,
+    surface,
+    setState,
+    setHeader,
+    reset: () => { lines = []; },
+    // Exposed so the pose can be exercised headlessly without waiting for a rare event.
+    // Test hooks. `debugHold(v)` pins the startle pose; `debugHold(null)` releases it.
+    debugState: () => ({ startle, flash, typing }),
+    debugHold: (v) => { holdStartle = v; },
+  };
+  if (typeof window !== 'undefined') window.__desk = api;
+  return api;
 }

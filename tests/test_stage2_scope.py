@@ -28,6 +28,11 @@ class Recorder(ThreadingHTTPServer):
         self.seen: list[str] = []
         self.lock = threading.Lock()
 
+    def handle_error(self, request, client_address):
+        """Tearing the fixture down closes live keep-alive connections, and the default
+        handler prints a traceback for each one. That is the fixture ending, not a fault,
+        and it should not litter the test output."""
+
 
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"

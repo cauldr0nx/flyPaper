@@ -170,8 +170,11 @@ async function main() {
     cloud.fire(frame.kc);
     if (!silent) appendLog(frame);
     if (frame.shown) {
+      // The count is of the run, so it includes frames replayed to catch up after a scrub.
+      // The startle is a notification to the viewer, so it only fires for frames they are
+      // actually watching - otherwise a scrub sets it off for responses already past.
       state.shown += 1;
-      desk.surface();
+      if (!silent) desk.surface();
     }
     desk.pushLine({ text: frame.log, shown: frame.shown, hit: frame.hit });
     desk.setState({
@@ -225,6 +228,19 @@ async function main() {
     $('live-dot').classList.toggle('playing', state.playing);
   });
   $('btn-restart').addEventListener('click', () => reset(0));
+
+  // Surfacing is what the tool is for and it is rare by design, so make it reachable
+  // instead of leaving the reader to wait for one.
+  $('btn-next').addEventListener('click', () => {
+    const LEAD = 10;   // start a little before it, so the approach is visible
+    let next = run.frames.findIndex((f, i) => i > state.frame && f.shown);
+    if (next < 0) next = run.frames.findIndex((f) => f.shown);
+    if (next < 0) return;
+    reset(Math.max(0, next - LEAD));
+    state.playing = true;
+    $('btn-play').innerHTML = '&#9646;&#9646; pause';
+    $('live-dot').classList.add('playing');
+  });
   $('speed').addEventListener('change', (e) => { state.speed = Number(e.target.value); });
   $('cloud-mode').addEventListener('change', (e) => cloud.setMode(e.target.value));
   $('only-surfaced').addEventListener('change', applyLogFilter);
