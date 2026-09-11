@@ -104,7 +104,57 @@ That is the same conclusion M4 reached on the synthetic corpus, now measured som
 nobody arranged it: **flypaper matches the incumbent rather than beating it, and removes the
 per-target configuration the incumbent needs to be pointed at.**
 
-## 4. What this does and does not establish
+## 4. A third target, where the scan never reached the application
+
+The remaining untested case was a single-page app answering 200 with the same shell to every
+path - where status, size, words and lines are all constant and stage one is blind by
+construction. Three hosts were found with exactly that signature, classified with three
+`curl` requests each: `200`, identical body size, on the root and on two paths that cannot
+exist.
+
+The scan saw something else entirely. **144 of 146 responses were a one-byte `403`.**
+
+The classification was done with `curl` and the scan with `ffuf`, and they were served
+different websites. Working out why took six probes and eliminated everything cheap:
+
+| Hypothesis | Test | Result |
+|---|---|---|
+| Rate | ffuf at 1 request/second | still refused |
+| User-Agent | ffuf with a browser UA | still refused |
+| Missing `Accept` headers | ffuf with the full browser set | still refused |
+| No User-Agent at all | `curl -H 'User-Agent;'` | **refused** - so a UA is necessary but not sufficient |
+| HTTP version | `curl --http1.1` and `--http2` | both fine |
+| Client stack | `python-requests`, even with its default UA | fine |
+
+Everything in the request was eliminated, and two non-Go clients passed while the Go one did
+not. What is left is the transport fingerprint of the HTTP client the fuzzer is built on,
+which no header can change.
+
+**Two things follow, and the second is the important one.**
+
+flypaper handled it correctly. It collapsed 144 identical one-byte refusals into a familiar
+cluster and put the two responses that escaped on top - a `200` on one path across all three
+hosts, and a `301` on another - at novelty 0.93 and 0.91 against a floor of 0.01. That is
+the tool doing exactly its job.
+
+And doing its job perfectly told the operator nothing true about the target. **The baseline
+it collapsed was the refuser's, not the application's.** Every conclusion from that run is a
+description of a WAF. The two escapees are interesting only in the sense that the WAF let
+them through.
+
+So `bench/live_probe.py` now reports a wall: when nine-tenths of a scan is refusals, it says
+so in as many words, that the ranking describes whatever refused you, and to check by hand
+whether a browser gets different answers. It deliberately does **not** abort - the scan is
+still rankable and the escapees are worth seeing - and it is separate from the abort guard,
+which only fires when a baseline *changes* mid-scan.
+
+There is a methodology lesson underneath, and it cost three probes to learn:
+**classify a target with the same client you will scan it with.** The `curl` reconnaissance
+described a site that the scanner was never going to see.
+
+The single-page-app case therefore remains untested. It was not reached.
+
+## 5. What this does and does not establish
 
 **Does:** the encoder collapses a real 404 wall into a familiar cluster, across three hosts
 with very different response shapes, with no configuration. The ranker then puts the
@@ -123,7 +173,7 @@ now reports the offline ranking as well as the live one, and the dashboard alrea
 suppresses the first fifty. Anyone reading a live ranking on a short scan is reading noise
 at the top, and the tool should say so more loudly than it does.
 
-## 5. Limitations
+## 6. Limitations
 
 - **Three hosts, one program, 438 requests.** This is a demonstration, not a survey.
 - **No labels.** There is no ground truth on a real target, so there is no precision figure
@@ -132,7 +182,7 @@ at the top, and the tool should say so more loudly than it does.
 - **Short wordlist, meaningful words only.** A real content-discovery run uses tens of
   thousands of words, most of them junk, and the familiar cluster would be far denser. That
   should help the ranker, and it is untested.
-- **Four hosts across two programs.** Three conventional front ends and one API. A
+- **Seven hosts across three programs, 1,022 requests.** Three conventional front ends and one API. A
   single-page app that returns 200 and the same HTML shell to every path is still untested,
   and is the case most likely to defeat the encoder, since status, size, words and lines
   would all be constant and only the body differs - which stage one never sees. That is

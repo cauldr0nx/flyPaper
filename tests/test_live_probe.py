@@ -84,3 +84,35 @@ def test_the_guard_reports_what_it_saw():
     message = str(exc.value)
     assert "429" in message
     assert "%" in message
+
+
+# --- being refused for the whole scan ----------------------------------------------------------
+
+
+def test_a_scan_answered_entirely_by_a_refusal_is_reported():
+    """Measured for real: 144 of 146 responses were a 1-byte 403 that curl never saw."""
+    watch = BlockWatch()
+    feed(watch, [403] * 140 + [200, 301])
+    wall = watch.wall()
+    assert wall is not None
+    assert "403" in wall and "WAF" in wall
+
+
+def test_an_ordinary_scan_reports_no_wall():
+    watch = BlockWatch()
+    feed(watch, [404] * 140 + [200] * 6)
+    assert watch.wall() is None
+
+
+def test_a_wall_is_reported_but_does_not_abort():
+    """Aborting would throw away a scan that is still rankable - and the two responses that
+    escaped the refusal are exactly what the operator wants to see."""
+    watch = BlockWatch()
+    feed(watch, [403] * (BASELINE + WINDOW * 3))  # no Blocked raised
+    assert watch.wall() is not None
+
+
+def test_a_wall_needs_to_be_nearly_total():
+    watch = BlockWatch()
+    feed(watch, ([404] * 4 + [403]) * 30)
+    assert watch.wall() is None

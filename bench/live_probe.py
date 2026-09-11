@@ -78,6 +78,34 @@ class BlockWatch:
         self.statuses: list[int] = []
         self.baseline_refusal: float | None = None
 
+    def wall(self) -> str | None:
+        """Whether the whole scan was answered by a refusal, rather than by the application.
+
+        The abort guard deliberately does not fire on this: a host that refuses from the
+        first request is not a host that changed its mind, and aborting would throw away a
+        scan that is still perfectly rankable. But the operator has to be told, because the
+        baseline flypaper collapsed is then the *refuser's* baseline and not the site's, and
+        every conclusion drawn from the run is about the WAF.
+
+        Measured on a real target: 144 of 146 responses were a 1-byte 403 while the same
+        paths returned 200 to curl and to python-requests. Not the rate (it happened at
+        1/s), not the User-Agent (a browser one was refused too), not the Accept headers
+        (supplied and still refused), not the HTTP version. What was left was the transport
+        fingerprint of the Go client the fuzzer is built on - which no header can fix.
+        """
+        if not self.statuses:
+            return None
+        share = sum(s in REFUSAL for s in self.statuses) / len(self.statuses)
+        if share < 0.9:
+            return None
+        common = collections.Counter(self.statuses).most_common(1)[0]
+        return (
+            f"{share:.0%} of {len(self.statuses)} responses were refusals "
+            f"(mostly {common[0]}). The baseline this run collapsed is whatever refused "
+            f"you, not the application - treat the ranking as a description of the WAF. "
+            f"Check by hand whether a browser gets the same answers."
+        )
+
     def observe(self, status: int) -> None:
         self.statuses.append(status)
         n = len(self.statuses)
@@ -224,8 +252,13 @@ def probe(host: str, scope: Scope, words: list[str], rate: int, scheme: str) -> 
         for item in rank_offline(iter_batch(capture), passes=2)[:12]
     ]
 
+    wall = watch.wall()
+    if wall:
+        print(f"  !! {wall}", file=sys.stderr)
+
     return {
         "host": host,
+        "wall": wall,
         "requests": sum(statuses.values()),
         "elapsed_s": round(time.monotonic() - started, 1),
         "statuses": dict(statuses.most_common()),

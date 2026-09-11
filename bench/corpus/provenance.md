@@ -71,8 +71,14 @@ sending the traffic again.
 | Public program B, 1 API host | same basis; picked because its 404 body quotes the requested path, so no two responses are the same size | 146 | 10/s | No |
 | `-ac` comparison run on the same API host | same basis; ffuf's own autocalibration, for the side-by-side in the report | 146 | 10/s | No |
 
+| Public program C, 3 hosts | same basis; picked for a soft-404 signature, which turned out to be a WAF refusing the scanner | 438 | 10/s | No |
+| Client-fingerprint probes | ~15 single requests isolating why ffuf saw a different site than curl | ~15 | manual | No |
+
 Candidate hosts were classified with three requests each (root plus two paths that cannot
 exist) before any of them was probed, so the full runs went only to hosts worth running.
+**That classification used `curl` and the scans used `ffuf`, and on program C they were
+served different websites** - see `reports/live-targets.md` section 4. Classify with the
+client you will scan with.
 
 Results are written up in `reports/live-targets.md`, which names no hosts. See that report
 for why, and for what the run showed.
