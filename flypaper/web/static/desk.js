@@ -28,7 +28,14 @@ const COLOURS = {
 
 const SCREEN_W = 960;
 const SCREEN_H = 600;
-const LOG_ROWS = 15;
+// Fewer, bigger rows than the panel used to hold: half the page wide, seen in perspective,
+// 15 rows of 22px was a texture of grey rather than text. The column count is what fits at
+// this size, and it has to reach past the fixed 45-character prefix - a line cut at 50
+// shows five letters of the word the response was for, which is the one part a reader is
+// looking for.
+const LOG_ROWS = 13;
+const LOG_PX = 23;
+const LOG_COLS = 60;
 
 function screenCanvas() {
   const canvas = document.createElement('canvas');
@@ -218,8 +225,28 @@ export async function initDesk(canvas) {
 
   /* ── camera rig ───────────────────────────────────────────────────── */
 
-  let yaw = 0.30, pitch = 0.17, distance = 10.4;
-  const target = new THREE.Vector3(0.1, 2.25, 0.1);
+  let yaw = 0.30, pitch = 0.17;
+  const target = new THREE.Vector3(0.1, 2.6, 0.1);
+
+  /* How far back to stand.
+   *
+   * The panel is half the page wide now and its shape changes with the window, so a fixed
+   * distance either crops the monitor on a narrow panel or leaves half a tall one empty.
+   * These are the half-extents of the built set about the target - desk, monitor, fly - and
+   * the camera is put wherever it takes to hold them, whatever shape the panel is. The
+   * user's own zoom multiplies it rather than replacing it.
+   */
+  const VIEW_HALF_WIDTH = 4.6;
+  const VIEW_HALF_HEIGHT = 3.1;
+  let userZoom = 1;
+  let range = 10;
+
+  function fitRange(aspect) {
+    const tan = Math.tan((camera.fov * Math.PI) / 180 / 2);
+    const forHeight = VIEW_HALF_HEIGHT / tan;
+    const forWidth = VIEW_HALF_WIDTH / (tan * Math.max(aspect, 0.3));
+    return Math.max(forHeight, forWidth) * 1.06;
+  }
   let dragging = false, lastX = 0, lastY = 0;
 
   canvas.addEventListener('pointerdown', (e) => {
@@ -238,7 +265,7 @@ export async function initDesk(canvas) {
   });
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
-    distance = Math.max(4.5, Math.min(22, distance * (1 + Math.sign(e.deltaY) * 0.09)));
+    userZoom = Math.max(0.45, Math.min(2.4, userZoom * (1 + Math.sign(e.deltaY) * 0.09)));
   }, { passive: false });
 
   /* ── monitor content ──────────────────────────────────────────────── */
@@ -260,32 +287,34 @@ export async function initDesk(canvas) {
     g.strokeRect(18, 18, SCREEN_W - 36, SCREEN_H - 36);
 
     g.font = '600 21px ui-monospace, Menlo, Consolas, monospace';
-    g.fillStyle = '#5d6a78';
+    g.fillStyle = '#8494a3';
     g.fillText(header, 38, 52);
-    g.fillStyle = state && state.shown ? '#ffd98a' : '#3a4550';
+    g.fillStyle = state && state.shown ? '#ffd98a' : '#64717e';
     g.fillText(state && state.shown ? '● SURFACED' : '● scanning', SCREEN_W - 200, 52);
 
     g.strokeStyle = '#101820';
     g.beginPath(); g.moveTo(38, 68); g.lineTo(SCREEN_W - 38, 68); g.stroke();
 
-    g.font = '22px ui-monospace, Menlo, Consolas, monospace';
+    g.font = `${LOG_PX}px ui-monospace, Menlo, Consolas, monospace`;
     const visible = lines.slice(-LOG_ROWS);
     visible.forEach((line, i) => {
-      const y = 104 + i * 28;
+      const y = 110 + i * 30;
       const last = i === visible.length - 1;
-      if (line.hit) g.fillStyle = last ? '#ff9b7d' : '#8a4a3a';
-      else if (line.shown) g.fillStyle = last ? '#ffd98a' : '#8a7340';
-      else g.fillStyle = last ? '#9fb0c0' : '#2f3a45';
-      g.fillText(line.text.slice(0, 58), 38, y);
+      // The monitor is read at an angle, through a perspective camera, in half a panel.
+      // The old palette was chosen for a full-width view and is unreadable in this one.
+      if (line.hit) g.fillStyle = last ? '#ffb69d' : '#b0664f';
+      else if (line.shown) g.fillStyle = last ? '#ffe4a8' : '#b39a5e';
+      else g.fillStyle = last ? '#cfdce8' : '#5a6b7a';
+      g.fillText(line.text.slice(0, LOG_COLS), 38, y);
     });
 
     if (state) {
       g.font = '19px ui-monospace, Menlo, Consolas, monospace';
-      g.fillStyle = '#42505e';
+      g.fillStyle = '#7d8c9b';
       g.fillText(
         `novelty ${state.novelty.toFixed(3)}   ${state.index}/${state.total}   ` +
         `saturation ${(state.saturation * 100).toFixed(1)}%`,
-        38, SCREEN_H - 34,
+        38, SCREEN_H - 30,
       );
     }
     screenTexture.needsUpdate = true;
@@ -328,6 +357,7 @@ export async function initDesk(canvas) {
     if (canvas.width !== w || canvas.height !== h) renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    range = fitRange(camera.aspect) * userZoom;
   }
 
   const clock = new THREE.Clock();
@@ -389,9 +419,9 @@ export async function initDesk(canvas) {
     paintScreen(lastState);
 
     camera.position.set(
-      target.x + Math.sin(yaw) * Math.cos(pitch) * distance,
-      target.y + Math.sin(pitch) * distance,
-      target.z + Math.cos(yaw) * Math.cos(pitch) * distance,
+      target.x + Math.sin(yaw) * Math.cos(pitch) * range,
+      target.y + Math.sin(pitch) * range,
+      target.z + Math.cos(yaw) * Math.cos(pitch) * range,
     );
     camera.lookAt(target);
     renderer.render(scene, camera);

@@ -6,7 +6,9 @@ that actually happened: for each response, which Kenyon cells the tag selected, 
 Bloom filter scored it, and what the terminal would have printed.
 
 That means the synapses lighting up on screen are the synapses that were read, in the order
-they were read, at their measured coordinates.
+they were read, at their measured coordinates. Each frame also carries the synaptic weights
+those cells were left holding, so the page can draw the filter darkening as it learns
+rather than inventing a shimmer.
 
     python -m flypaper.web.replay --corpus bench/corpus/bench-token.jsonl --out …
 
@@ -16,7 +18,9 @@ Live capture is the same code path: `flypaper.web.server` calls `record()` direc
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +33,18 @@ from flypaper.rank.score import Ranker
 
 STATIC = REPO_ROOT / "flypaper" / "web" / "static"
 MAX_FRAMES = 1400
+
+
+def _quantise_weights(weights: np.ndarray) -> str:
+    """Synaptic weights as bytes, base64'd.
+
+    A weight lives in [0, 1] and is only ever read as a brightness, so a byte is more
+    precision than the screen can show. Written out as JSON numbers instead, the weight
+    track would be the largest thing on the page by some way - ~100 numbers per response,
+    for every response - and the dashboard is meant to load over a tailnet on a phone.
+    """
+    bytes_ = np.clip(np.rint(np.asarray(weights, dtype=np.float64) * 255.0), 0, 255)
+    return base64.b64encode(bytes_.astype(np.uint8).tobytes()).decode("ascii")
 
 
 def _log_line(index: int, result: FfufResult, novelty: float, shown: bool) -> str:
@@ -55,6 +71,12 @@ def record(
 
     Single pass, live semantics: each response is scored against only what came before it,
     which is what a running scan does and what makes the replay honest.
+
+    Every response is scored. `max_frames` only thins what is *written out*, for a run too
+    long to ship whole; a surfaced response is always kept. A thinned run's weight track is
+    then a subsample of the real one - the weights are the filter's own, at the moments they
+    were captured, but a cell depressed only during a skipped response keeps its last
+    reported value until it is next seen.
     """
     hits = hits or set()
     kwargs = {"channel_set": channel_set} if channel_set else {}
@@ -66,8 +88,18 @@ def record(
     stride = max(1, len(results) // max_frames)
 
     for index, result in enumerate(results):
-        scored = ranker.score(result)
-        novelty = scored.novelty
+        # `Ranker.score`, step by step, so the tag it used can be kept. Calling it and then
+        # re-encoding to recover the tag would encode the response twice: the second pass
+        # sees running statistics that already include the response, so the cells the page
+        # lit were not quite the cells the filter read, and every later score was computed
+        # against a baseline that had counted this response twice.
+        when = time.time() if ranker.time_base == "wallclock" else None
+        vector = ranker.encoder.encode(result)
+        tag = ranker.flyhash.tag_valued(vector[None, :])
+        novelty = float(ranker.filter.observe(tag, when=when)[0])
+        active = np.flatnonzero(tag[0]).astype(int).tolist()
+        # After the depression this response caused, which is the state the page draws next.
+        weights = ranker.filter.weights[active]
 
         shown = False
         if index >= warmup:
@@ -77,15 +109,12 @@ def record(
         if index % stride and not shown:
             continue
 
-        vector = ranker.encoder.encode(result)
-        tag = ranker.flyhash.tag(vector[None, :])[0]
-        active = np.flatnonzero(tag).astype(int).tolist()
-
         frames.append(
             {
                 "i": index,
                 "n": round(float(novelty), 5),
                 "kc": active,
+                "wq": _quantise_weights(weights),
                 "w": result.word,
                 "s": result.status,
                 "len": result.length,

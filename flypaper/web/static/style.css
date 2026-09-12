@@ -3,21 +3,32 @@
  * Instrument panel, not a product page: monospace throughout, thin rules, nothing
  * decorative that could be mistaken for data. Amber is the input side of the circuit,
  * cyan the readout, white-hot means firing right now.
+ *
+ * The layout is one screen. On a desktop window the two 3D views sit side by side and
+ * nothing scrolls: header, views, readouts and the transport bar are rows of a grid over
+ * the viewport height, and every row that can grow is allowed to shrink to nothing so the
+ * page never overflows. Below 900px that grid is dropped entirely and the page stacks and
+ * scrolls, because a phone has no width to give and vertical is the only axis left.
  */
 
 :root {
   --bg:        #05070a;
   --panel:     #080b10;
-  --ink:       #c8d2dc;
-  --dim:       #5d6a78;
-  --dimmer:    #3a4550;
-  --rule:      #151c24;
-  --rule-lit:  #22303c;
+  /* Raised from the original ink/dim pair: the log and the overlay labels are the text a
+   * reader actually parses, and at the old values they sat near the floor of legibility on
+   * a bright room's screen. */
+  --ink:       #d6dfe8;
+  --dim:       #8494a3;
+  --dimmer:    #64717e;
+  --rule:      #1a232c;
+  --rule-lit:  #2a3946;
   --amber:     #d9a441;
   --amber-hot: #ffd98a;
   --cyan:      #5fd4d6;
   --cyan-hot:  #a9f4f2;
+  --cyan-dark: #0a2226;
   --hit:       #ff7a59;
+  --gap: 10px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -34,7 +45,11 @@ html, body {
 }
 
 body {
-  padding: 0 0 76px;
+  height: 100vh;
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
   background-image:
     radial-gradient(1200px 600px at 15% -10%, #0b1119 0%, transparent 60%),
     radial-gradient(900px 500px at 90% 0%, #0a1014 0%, transparent 55%);
@@ -48,18 +63,37 @@ body {
 
 .topbar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 20px 12px;
+  align-items: baseline;
+  gap: 10px 20px;
+  flex-wrap: wrap;
+  padding: 9px 18px 8px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.brandblock { display: flex; align-items: baseline; gap: 12px; }
+
+.brand {
+  color: var(--dim);
   font-size: 11px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
 }
 
-.brand { color: var(--dim); }
+h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; }
 
-.rail { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.sub { margin: 0; color: var(--dim); font-size: 11px; flex: 1 1 260px; min-width: 0; }
+
+.rail {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
 .rail .sep { color: var(--dimmer); }
 
 .live { color: var(--amber); }
@@ -70,37 +104,39 @@ body {
 
 .frame {
   position: relative;
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 8px 20px 20px;
+  min-height: 0;
+  min-width: 0;
+  padding: var(--gap) 16px;
+  display: grid;
+  /* The 3D views get the larger share; the traces and the stream need enough to read but
+   * not more. Both rows are minmax(0, …) so a short window shrinks them instead of
+   * overflowing the viewport. */
+  grid-template-rows: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: var(--gap);
 }
 
-.corner { position: absolute; width: 22px; height: 22px; pointer-events: none; }
-.corner.tl { top: 0;    left: 4px;   border-top: 1px solid var(--rule-lit);    border-left: 1px solid var(--rule-lit); }
-.corner.tr { top: 0;    right: 4px;  border-top: 1px solid var(--rule-lit);    border-right: 1px solid var(--rule-lit); }
-.corner.bl { bottom: 0; left: 4px;   border-bottom: 1px solid var(--rule-lit); border-left: 1px solid var(--rule-lit); }
-.corner.br { bottom: 0; right: 4px;  border-bottom: 1px solid var(--rule-lit); border-right: 1px solid var(--rule-lit); }
+.corner { position: absolute; width: 20px; height: 20px; pointer-events: none; }
+.corner.tl { top: 2px;    left: 4px;   border-top: 1px solid var(--rule-lit);    border-left: 1px solid var(--rule-lit); }
+.corner.tr { top: 2px;    right: 4px;  border-top: 1px solid var(--rule-lit);    border-right: 1px solid var(--rule-lit); }
+.corner.bl { bottom: 2px; left: 4px;   border-bottom: 1px solid var(--rule-lit); border-left: 1px solid var(--rule-lit); }
+.corner.br { bottom: 2px; right: 4px;  border-bottom: 1px solid var(--rule-lit); border-right: 1px solid var(--rule-lit); }
 
-/* ── title ─────────────────────────────────────────────────────────────── */
-
-.titleblock {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  padding: 10px 4px 18px;
-  border-bottom: 1px solid var(--rule);
+.views, .readouts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gap);
+  min-height: 0;
+  min-width: 0;
 }
-
-h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: 0.01em; }
-.sub { margin: 5px 0 0; color: var(--dim); font-size: 11.5px; }
-.titlemeta { display: flex; align-items: center; gap: 12px; font-size: 11px; }
 
 /* ── panels ────────────────────────────────────────────────────────────── */
 
 .panel {
-  margin: 20px 0 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--rule);
   background: linear-gradient(180deg, var(--panel), #05080c);
 }
@@ -110,7 +146,8 @@ h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: 0.01em; }
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 11px 14px;
+  flex: 0 0 auto;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--rule);
 }
 
@@ -121,74 +158,114 @@ h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: 0.01em; }
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--ink);
+  white-space: nowrap;
 }
 
-.panel-meta { font-size: 10.5px; }
+.panel-meta { font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* The honesty notes are long, and on a one-screen layout a long paragraph under each view
+ * is the difference between fitting and not. The claim itself stays visible in the panel
+ * head and in the summary; the full text is one click away and scrolls in place rather than
+ * pushing the canvas off the screen. */
 .note {
-  margin: 0;
-  padding: 11px 14px 13px;
+  flex: 0 0 auto;
+  min-height: 0;
   border-top: 1px solid var(--rule);
   color: var(--dim);
   font-size: 11px;
-  line-height: 1.62;
 }
-.note b { color: #93a2b2; font-weight: 600; }
+.note > summary {
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--dimmer);
+  list-style-position: inside;
+}
+.note > summary:hover { color: var(--dim); }
+.note[open] { overflow-y: auto; max-height: 60%; }
+.note p { margin: 0; padding: 0 12px 11px; line-height: 1.62; }
+.note b { color: #a9b8c7; font-weight: 600; }
 .note em { color: var(--dim); }
 
 /* ── 3D views ──────────────────────────────────────────────────────────── */
 
-.deskwrap, .cloudwrap { position: relative; }
-#desk  { display: block; width: 100%; height: 460px; touch-action: none; }
-#cloud { display: block; width: 100%; height: 430px; touch-action: none; }
+/* Absolute canvas inside a flexible box: a canvas has an intrinsic size and will happily
+ * refuse to shrink, which on a fixed-height layout means the page overflows. Taking it out
+ * of flow makes the wrapper the only thing that decides how big it is, and both renderers
+ * already resize to their canvas' client box every frame. */
+.viewport { position: relative; flex: 1 1 auto; min-height: 0; }
+#desk, #cloud {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
 
 .overlay-tl, .overlay-tr, .overlay-bl, .overlay-br {
   position: absolute;
   font-size: 10.5px;
   pointer-events: none;
   line-height: 1.65;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
 }
-.overlay-tl { top: 12px;    left: 14px; }
-.overlay-tr { top: 12px;    right: 14px; text-align: right; }
-.overlay-bl { bottom: 12px; left: 14px; }
-.overlay-br { bottom: 12px; right: 14px; }
+.overlay-tl { top: 10px;    left: 12px; }
+.overlay-tr { top: 10px;    right: 12px; text-align: right; }
+.overlay-bl { bottom: 10px; left: 12px; }
+.overlay-br { bottom: 10px; right: 12px; }
 .overlay-tl .k { display: inline-block; min-width: 66px; }
 
 .legend {
   display: flex;
-  gap: 18px;
+  gap: 6px 16px;
   flex-wrap: wrap;
-  padding: 9px 14px;
+  flex: 0 0 auto;
+  padding: 7px 12px;
   border-top: 1px solid var(--rule);
   font-size: 10.5px;
   color: var(--dim);
 }
 .sw { display: inline-block; width: 8px; height: 8px; margin-right: 6px; vertical-align: middle; border-radius: 50%; }
-.sw-calyx { background: var(--amber); }
-.sw-a3    { background: var(--cyan); }
-.sw-kc    { background: #6f7d8c; }
-.sw-fire  { background: #fff; box-shadow: 0 0 7px #fff; }
+.sw-calyx   { background: var(--amber); }
+.sw-a3      { background: #2f9fa4; }
+.sw-a3-dark { background: var(--cyan-dark); border: 1px solid #17454c; }
+.sw-kc      { background: #62707e; }
+.sw-fire    { background: #fff; box-shadow: 0 0 7px #fff; }
+.sw-surge   { background: #fff; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.3), 0 0 11px 3px rgba(255, 255, 255, 0.55); }
 
 /* ── traces ────────────────────────────────────────────────────────────── */
 
-.traces { padding: 4px 14px 0; }
-.trace { border-bottom: 1px solid var(--rule); padding: 9px 0; }
-.trace:last-child { border-bottom: 0; }
+.traces {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  padding: 8px 12px 0;
+}
+.trace { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 
 .trace-label {
   display: flex;
   justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
   font-size: 10.5px;
-  margin-bottom: 5px;
+  margin-bottom: 4px;
 }
-.trace-label b { font-weight: 600; color: #93a2b2; }
+.trace-label b { font-weight: 600; color: #a9b8c7; white-space: nowrap; }
+.trace-label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.chart { display: block; width: 100%; height: 62px; }
+.chartwrap { position: relative; flex: 1 1 auto; min-height: 24px; }
+.chart { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
 
 .axis {
   display: flex;
   justify-content: space-between;
-  padding: 6px 14px 11px;
+  flex: 0 0 auto;
+  padding: 5px 12px 8px;
   font-size: 10px;
 }
 
@@ -196,28 +273,18 @@ h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: 0.01em; }
 
 .log {
   margin: 0;
-  padding: 11px 14px;
-  height: 260px;
-  overflow-y: auto;
-  font-size: 11px;
-  line-height: 1.62;
+  padding: 9px 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  font-size: 11.5px;
+  line-height: 1.58;
   white-space: pre;
-  color: var(--dim);
+  color: #93a5b6;
 }
 .log .row.surfaced { color: var(--amber-hot); }
 .log .row.hit      { color: var(--hit); }
 .log .row.cursor   { background: #101820; color: #dfe7ee; }
-
-/* ── footer ────────────────────────────────────────────────────────────── */
-
-.foot {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  flex-wrap: wrap;
-  padding: 14px 4px 4px;
-  font-size: 10px;
-}
 
 /* ── controls ──────────────────────────────────────────────────────────── */
 
@@ -227,41 +294,72 @@ h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: 0.01em; }
   border: 1px solid var(--rule-lit);
   font-family: var(--mono);
   font-size: 11px;
-  padding: 5px 10px;
+  padding: 4px 9px;
   cursor: pointer;
 }
-.btn:hover, .select:hover { border-color: #31434f; }
+.btn:hover, .select:hover { border-color: #3d5162; }
 
 .scrub {
-  position: fixed;
-  left: 0; right: 0; bottom: 0;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 11px 20px calc(11px + env(safe-area-inset-bottom));
+  flex-wrap: wrap;
+  padding: 8px 18px calc(8px + env(safe-area-inset-bottom));
   background: rgba(5, 7, 10, 0.94);
   border-top: 1px solid var(--rule);
-  backdrop-filter: blur(8px);
 }
 
-#scrub { flex: 1; accent-color: var(--amber); min-width: 80px; }
+#scrub { flex: 1 1 160px; accent-color: var(--amber); min-width: 80px; }
 #scrub-label { font-size: 10.5px; white-space: nowrap; }
 
-/* ── narrow ────────────────────────────────────────────────────────────── */
+.foot {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 10px;
+  margin-left: auto;
+}
 
-@media (max-width: 640px) {
+/* ── narrow: stack, and let it scroll ──────────────────────────────────── */
+
+@media (max-width: 900px) {
+  html, body { height: auto; }
+  body {
+    display: block;
+    overflow: visible;
+    padding-bottom: 124px;
+  }
+  .frame { display: block; padding: 8px 12px 16px; }
+  .views, .readouts { display: block; }
+  .panel { margin-top: var(--gap); }
+  .views > .panel:first-child { margin-top: 0; }
+  .viewport { flex: none; }
+  .deskwrap  { height: 300px; }
+  .cloudwrap { height: 320px; }
+  .note[open] { max-height: none; overflow: visible; }
+  .traces { display: block; padding: 4px 12px 0; }
+  .trace { padding: 8px 0; border-bottom: 1px solid var(--rule); }
+  .trace:last-child { border-bottom: 0; }
+  .chartwrap { height: 58px; }
+  .log { height: 220px; }
+  .brandblock { gap: 10px; }
+  h1 { font-size: 14px; white-space: normal; }
   .panel-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .panel-meta { white-space: normal; }
   .trace-label { flex-direction: column; gap: 2px; }
-  .overlay-tl { font-size: 9.5px; }
+  .overlay-tl, .overlay-tr { font-size: 9.5px; }
   .overlay-bl, .overlay-br { font-size: 9px; max-width: 62%; }
-  .overlay-tr { font-size: 9.5px; }
-  .legend { gap: 10px 14px; }
-  .frame { padding: 8px 12px 20px; }
-  #desk  { height: 300px; }
-  #cloud { height: 300px; }
-  .log   { height: 200px; font-size: 10px; }
-  h1 { font-size: 15px; }
-  .topbar { padding: 12px 12px 10px; }
-  .rail .sep { display: none; }
+  .legend { gap: 6px 12px; }
   .overlay-tl .k { min-width: 58px; }
+  /* The transport is the one thing that must stay reachable while scrolling. */
+  .scrub {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    backdrop-filter: blur(8px);
+    gap: 8px 12px;
+  }
+  /* Onto its own line rather than out of the page: what the tool does and does not claim
+   * is not the part to drop when the screen gets small. */
+  .foot { margin-left: 0; width: 100%; gap: 4px 12px; font-size: 9.5px; }
 }

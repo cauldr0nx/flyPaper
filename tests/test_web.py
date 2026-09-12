@@ -7,6 +7,7 @@ coordinates rather than anything invented for the picture.
 
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -56,6 +57,46 @@ def test_active_cells_match_the_declared_sparsity():
         assert all(0 <= i < payload["n_kc"] for i in frame["kc"])
 
 
+def weights_of(frame) -> list[float]:
+    """The frame's synaptic weights, as the page decodes them."""
+    return [b / 255 for b in base64.b64decode(frame["wq"])]
+
+
+def test_frames_carry_one_weight_per_active_cell():
+    """The page colours a synapse by its cell's weight, so the two must line up."""
+    payload = record(a_run(120), warmup=10)
+    for frame in payload["frames"]:
+        weights = weights_of(frame)
+        assert len(weights) == len(frame["kc"])
+        assert all(0.0 <= w <= 1.0 for w in weights)
+
+
+def test_a_cell_only_ever_darkens_within_a_run():
+    """Depression is one-way without temporal decay, so a cell the page has dimmed must
+    never brighten again. A page that showed one brightening would be showing an artifact of
+    the recording rather than the filter."""
+    payload = record(a_run(300), warmup=20)
+    last: dict[int, float] = {}
+    for frame in payload["frames"]:
+        for cell, weight in zip(frame["kc"], weights_of(frame), strict=True):
+            assert weight <= last.get(cell, 1.0) + 1 / 255
+            last[cell] = weight
+    assert min(last.values()) < 0.5, "nothing was depressed; the weights are not the filter's"
+
+
+def test_the_recorded_scores_are_the_live_ones():
+    """The replay must be the run that would have happened, to the last digit: the page is
+    only worth having if its numbers are the tool's."""
+    from flypaper.rank.score import Ranker
+
+    results = a_run(200)
+    live = [s.novelty for s in Ranker().stream(results)]
+    recorded = record(results, warmup=20)["frames"]
+    assert len(recorded) == len(live)
+    for frame, novelty in zip(recorded, live, strict=True):
+        assert frame["n"] == round(novelty, 5)
+
+
 def test_the_odd_response_scores_far_above_the_rest():
     payload = record(a_run(), hits={"treasure"}, warmup=20)
     odd = next(f for f in payload["frames"] if f["w"] == "treasure")
@@ -102,6 +143,7 @@ def test_replay_holds_no_response_bodies():
             "i",
             "n",
             "kc",
+            "wq",
             "w",
             "s",
             "len",

@@ -11,6 +11,18 @@ import { initCloud } from './neurons.js';
 
 const $ = (id) => document.getElementById(id);
 
+/* The filter's synaptic weights for the cells this response fired, straight out of the
+ * recording. `replay.py` quantises each weight to a byte and base64s the lot, because a
+ * hundred of them per response for two thousand responses is otherwise the biggest thing
+ * on the page and this loads over a tailnet. A byte is finer than the screen can show. */
+function weightsOf(frame) {
+  if (!frame.wq) return null;   // a run recorded before the weight track existed
+  const raw = atob(frame.wq);
+  const out = new Float32Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i) / 255;
+  return out;
+}
+
 const state = {
   run: null,
   frame: 0,
@@ -137,10 +149,23 @@ async function main() {
     `replay of a recorded run · commit ${(run.provenance.git_commit || '').slice(0, 10)} · ` +
     `${run.provenance.generated_utc}`;
   $('ax-r').textContent = `${run.total_responses}`;
+  $('note-shown').textContent = `${run.shown_count}`;
   desk.setHeader(`flypaper — ${run.label || 'run'}`);
 
   const scrubEl = $('scrub');
   scrubEl.max = String(run.frames.length - 1);
+
+  /* The scale the neuron view's brightness is read against: the most novel response this
+   * run produced.
+   *
+   * Novelty is not used raw there, and the reason is in the numbers. On a settled scan the
+   * filter is doing its job, so 99.6% of this run's responses score a flat 0.000 and the
+   * most novel thing in two thousand responses still only reaches 0.312. Scaled absolutely,
+   * every flash would be the same invisible sliver above nothing. Against the run's own
+   * ceiling, routine traffic sits at the floor and an outlier fills the range - which is
+   * the comparison a reader is actually making.
+   */
+  const noveltyScale = Math.max(1e-6, ...run.frames.map((f) => f.n));
 
   const novelty = [];
   const saturation = [];
@@ -167,15 +192,29 @@ async function main() {
       while (marks.length && marks[0].i < 0) marks.shift();
     }
 
-    cloud.fire(frame.kc);
-    if (!silent) appendLog(frame);
-    if (frame.shown) {
-      // The count is of the run, so it includes frames replayed to catch up after a scrub.
-      // The startle is a notification to the viewer, so it only fires for frames they are
-      // actually watching - otherwise a scrub sets it off for responses already past.
-      state.shown += 1;
-      if (!silent) desk.surface();
+    /* One response, handed to both panels on the same tick out of the same frame.
+     *
+     * `frame.shown` is the run's own decision that this response cleared the cutoff, and it
+     * is the only thing either panel reacts to specially: the fly startles and the cells
+     * that response lit surge, together, because it is one event. They were already on the
+     * same tick before, but the neuron flash decayed in a quarter of a second while the
+     * startle ran for two, so by the time a viewer looked across there was nothing left to
+     * see.
+     *
+     * Silent frames are the catch-up after a scrub: the filter still learned from them, so
+     * its weights have to move, but the viewer did not watch them arrive and nothing should
+     * react to responses already past.
+     */
+    const weights = weightsOf(frame);
+    if (silent) {
+      cloud.observe(frame.kc, weights);
+    } else {
+      cloud.fire(frame.kc, weights, frame.n / noveltyScale, frame.shown);
+      if (frame.shown) desk.surface();
+      appendLog(frame);
     }
+    // The count is of the run, so it includes frames replayed to catch up after a scrub.
+    if (frame.shown) state.shown += 1;
     desk.pushLine({ text: frame.log, shown: frame.shown, hit: frame.hit });
     desk.setState({
       novelty: frame.n,
@@ -215,10 +254,20 @@ async function main() {
     state.shown = 0;
     while (logRows.length) logEl.removeChild(logRows.pop());
     desk.reset();
+    cloud.reset();
     state.frame = to;
     // Replay quietly up to the scrub point so the traces and the filter state are right.
+    // The traces only need the window they display, but a synaptic weight is the whole run
+    // so far - a cell depressed at response 20 is still depressed at response 1,900 - so the
+    // filter is caught up from the start. That is only arithmetic; the one repaint at the
+    // end is what costs.
     const from = Math.max(0, to - 420);
+    for (let i = 0; i < from; i += 1) {
+      const frame = run.frames[i];
+      if (frame) cloud.observe(frame.kc, weightsOf(frame));
+    }
     for (let i = from; i < to; i += 1) renderFrame(i, { silent: true });
+    cloud.repaint();
   }
 
   /* controls */
