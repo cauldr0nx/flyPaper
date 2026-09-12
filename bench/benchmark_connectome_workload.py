@@ -189,6 +189,29 @@ def main() -> int:
     return 0
 
 
+def _joint_counts(results: dict) -> dict:
+    """The joint test's numbers, computed rather than typed.
+
+    An earlier version of this report stated them in prose. Adding one surface changed them
+    and the prose kept the old ones, which is exactly the drift a generated report exists to
+    prevent.
+    """
+    live = [k for k, r in results.items() if len(set(r["random"]["worst_ranks"])) > 1]
+    out: dict = {"n": results[live[0]]["random"]["n_seeds"] if live else 0}
+    for key in (SHIPPED, "random", "random-matched", "connectome-permuted"):
+        count = sum(
+            1
+            for i in range(out["n"])
+            if all(
+                results[k][key]["runs"][i]["worst_rank"] <= results[k]["connectome"]["worst_rank"]
+                for k in live
+            )
+        )
+        out[key] = count
+        out[f"p_{key}"] = (count + 1) / (out["n"] + 1)
+    return out
+
+
 def write_report(results: dict) -> None:
     circuit = Circuit.load(CIRCUIT)
     lines: list[str] = []
@@ -328,15 +351,18 @@ def write_report(results: dict) -> None:
     add("")
 
     add("## Interpretation\n")
+    joint = _joint_counts(results)
     add(
-        "**The connectome beats a plain random projection, and does not beat its own "
-        "degree-preserving null.** Held across every discriminating surface at once, 1 of "
-        "32 uniform random draws matches it (p=0.061); 8 of 32 draws that keep the measured "
-        "*fan-in* while randomising the *targets* match it (p=0.273), as do 9 of 32 that "
-        "keep the wiring and shuffle which response feature feeds which glomerulus "
-        "(p=0.303). Two independent controls agree: nothing detectable here comes from "
-        "which glomerulus reaches which Kenyon cell. What is left is how unevenly the claws "
-        "are spread.\n"
+        f"**The connectome beats a plain random projection, and does not beat its own "
+        f"degree-preserving null.** Held across every discriminating surface at once, "
+        f"{joint['random']} of {joint['n']} uniform random draws match it "
+        f"(p={joint['p_random']:.3f}); {joint['random-matched']} of {joint['n']} draws that "
+        f"keep the measured *fan-in* while randomising the *targets* match it "
+        f"(p={joint['p_random-matched']:.3f}), as do {joint['connectome-permuted']} of "
+        f"{joint['n']} that keep the wiring and shuffle which response feature feeds which "
+        f"glomerulus (p={joint['p_connectome-permuted']:.3f}). Two independent controls "
+        f"agree: nothing detectable here comes from which glomerulus reaches which Kenyon "
+        f"cell.\n"
     )
     add(
         "**The channel-shuffle control also tells us the encoder-to-glomerulus assignment "
@@ -353,7 +379,8 @@ def write_report(results: dict) -> None:
         f"went from 28 to 215, and v4 won on 0 of 32 seeds on two surfaces. So much of the "
         f"connectome's apparent gain is recovering ground the wider encoder gave away. "
         f"Against the tool as it actually ships - the `shipped today` column - the "
-        f"connectome's joint advantage is 3 of 32 draws, p=0.121. Not significant.\n"
+        f"connectome's joint advantage is {joint[SHIPPED]} of {joint['n']} draws, "
+        f"p={joint['p_' + SHIPPED]:.3f}. Not significant.\n"
     )
     add(
         "**The mechanism is collapse, and it is only part of the story.** Pooled within "

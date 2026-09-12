@@ -617,12 +617,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ranker.add_argument(
         "--per",
-        choices=("none", "host", "dir"),
+        choices=("none", "host", "dir", "shape"),
         default="none",
         help=(
-            "keep a separate baseline per host, or per directory. This is the case ffuf "
-            "cannot handle - one -fs or -ac filter cannot describe fifty hosts, or every "
-            "directory a recursive scan walks into. Costs 16 kB per partition."
+            "keep a separate baseline per host, per directory, or per kind of page. This is "
+            "the case ffuf cannot handle - one -fs or -ac filter cannot describe fifty "
+            "hosts, or every directory a recursive scan walks into. Costs 16 kB per "
+            "partition. 'shape' splits one host by status and size decade, which is what "
+            "helps when a single host serves several different response populations: on a "
+            "seven-population surface it moved the hardest labelled response from a median "
+            "rank of 454 to 10. It falls back to the host baseline for any shape too thin "
+            "to have an opinion."
         ),
     )
     ranker.add_argument("--jsonl", action="store_true", help="emit JSONL for piping onward")
@@ -660,7 +665,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--db", default=str(default_db()))
     watch.add_argument(
         "--per",
-        choices=("none", "host", "dir"),
+        choices=("none", "host", "dir", "shape"),
         default="none",
         help="must match how the baseline was established",
     )

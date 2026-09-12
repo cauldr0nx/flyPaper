@@ -16,6 +16,7 @@ which is not the same as *this response is interesting*.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
@@ -101,12 +102,41 @@ def _dir_of(result: FfufResult) -> str:
     return f"{_host_of(result)}{path}"
 
 
+#: Size buckets for `shape`, one per power of two. Coarse on purpose: the point is to put a
+#: response beside the population it resembles, not to give it a bucket of its own. A finer
+#: split would hand every unusual response a private partition, where it is novel by
+#: definition and the ranking means nothing.
+def _shape_of(result: FfufResult) -> str:
+    """Host, status, and the size decade - one baseline per kind of page a host serves.
+
+    `host` and `dir` split a stream by *where* a response came from. This splits it by
+    *what it looks like*, which is the thing that actually breaks a single baseline: a host
+    serving seven different response populations has one standard deviation spanning all
+    seven, so a page 25% off its own population's size sits well under one sigma of the
+    whole and reads as unremarkable. Measured on `bench-sprawl`, that is the difference
+    between the hardest labelled hit landing past rank 700 and landing in the top ten.
+
+    Thin partitions are the hazard, and `PartitionedRanker` handles them by falling back
+    rather than by suppressing: a response alone in its shape is scored against the host.
+    """
+    size = result.length if result.length > 0 else 0
+    decade = int(math.log2(size)) if size > 0 else -1
+    return f"{_host_of(result)}|{result.status}|{decade}"
+
+
 #: How to split a stream into populations that each deserve their own baseline.
 PARTITIONS: dict[str, Callable[[FfufResult], str]] = {
     "none": lambda result: "",
     "host": _host_of,
     "dir": _dir_of,
+    "shape": _shape_of,
 }
+
+#: Where a partition falls back to when it has not seen enough to have an opinion. `shape`
+#: is fine-grained enough to produce partitions of one, and a partition of one calls its
+#: single member maximally novel - which is how `--per dir` once scored 1.000 on partitions
+#: of one and meant nothing by it.
+FALLBACK: dict[str, str] = {"shape": "host"}
 
 
 def partition_key(result: FfufResult, how: str) -> str:
@@ -266,6 +296,16 @@ class Ranker:
         one the record is **not** in it, and discounting a contribution it never made
         inflates its novelty - a page seen once last week scored 0.64 instead of 0.0, so
         every real page on the target reported as new every week.
+
+        **The encoder still learns here, and that is a known gap rather than a decision.**
+        `score_against_baseline` freezes its encoder because pass one built the statistics
+        it needs. This cannot: `Store` persists the filter's weights and not the encoder's
+        running statistics, so a restored baseline arrives with an encoder that has seen
+        nothing, and freezing it would leave every channel answering "no opinion" forever.
+        Learning from the new stream rebuilds usable statistics, at the cost that this
+        week's tags are computed against this week's statistics while the weights were
+        learned against last week's. Fixing it properly means persisting the encoder
+        context, which is a store schema change.
         """
         vector = self.encoder.encode(result)
         tag = self.flyhash.tag_valued(vector[None, :])
@@ -297,8 +337,13 @@ class Ranker:
         against that baseline would score it partly against itself. `score_excluding` divides
         its own depression back out, which keeps offline scores on the same scale as live
         ones.
+
+        The encoder does not learn here either. Pass one built the statistics; pass two
+        reads them. Letting pass two keep updating them made a record's score depend on how
+        many other records had been scored before it, so the same record against the same
+        baseline could come out differently depending on the order of the second pass.
         """
-        vector = self.encoder.encode(result)
+        vector = self.encoder.encode(result, observe=False)
         tag = self.flyhash.tag_valued(vector[None, :])
         scored = Scored(
             result=result,
@@ -333,6 +378,9 @@ class PartitionedRanker:
 
     how: str = "host"
     min_observations: int = 25
+    #: Set automatically from `FALLBACK` for partitions fine enough to need one. `None`
+    #: keeps the original behaviour exactly: one baseline per partition, no fallback.
+    fallback_how: str | None = None
     channel_set: str = CHANNEL_SET_VERSION
     projection: str = "random"
     n_kc: int = DEFAULTS["n_kc"]
@@ -354,6 +402,10 @@ class PartitionedRanker:
             raise ValueError(
                 f"unknown partition {self.how!r}; known: {', '.join(sorted(PARTITIONS))}"
             )
+        if self.fallback_how is None:
+            self.fallback_how = FALLBACK.get(self.how)
+        if self.fallback_how == self.how:
+            self.fallback_how = None
         if self.projection not in ("random", "degree-sampled"):
             raise ValueError(
                 f"partitioned ranking shares one projection across every partition, so it "
@@ -388,12 +440,35 @@ class PartitionedRanker:
         return time.time() if self.time_base == "wallclock" else None
 
     def score(self, result: FfufResult) -> Scored:
+        """Score against the finest partition that has seen enough, and learn into all of them.
+
+        With a coarse partition this is exactly what it was before. With `shape`, which is
+        fine enough to produce partitions of one, the fallback is what stops a response
+        alone in its bucket from being called maximally novel because nothing has ever
+        depressed its cells. Both baselines always learn, so a partition that is thin now
+        becomes authoritative the moment it has enough members.
+        """
         key = partition_key(result, self.how)
         encoder, filt = self._for(key)
         vector = encoder.encode(result)
         tag = self.flyhash.tag_valued(vector[None, :])
-        novelty = float(filt.observe(tag, when=self._when())[0])
+
+        # Learn into the fine partition regardless of which one is scoring.
+        fine_novelty = float(filt.observe(tag, when=self._when())[0])
         self.counts[key] += 1
+        settled = self.counts[key] >= self.min_observations
+
+        novelty, scoring_key = fine_novelty, key
+        if self.fallback_how:
+            coarse_key = partition_key(result, self.fallback_how)
+            coarse_encoder, coarse_filt = self._for(coarse_key)
+            # The coarse baseline has to see every response or it is not a host baseline,
+            # and it must see it through its own encoder - see `observe_only`.
+            coarse_tag = self.flyhash.tag_valued(coarse_encoder.encode(result)[None, :])
+            coarse_novelty = float(coarse_filt.observe(coarse_tag, when=self._when())[0])
+            self.counts[coarse_key] += 1
+            if not settled:
+                novelty, scoring_key = coarse_novelty, coarse_key
 
         scored = Scored(
             result=result,
@@ -401,8 +476,9 @@ class PartitionedRanker:
             position=self.n_scored,
             channel_set=self.channel_set,
             projection=self.projection,
-            partition=key,
-            settled=self.counts[key] >= self.min_observations,
+            partition=scoring_key,
+            # A response scored against the fallback is as settled as that fallback is.
+            settled=settled or self.counts.get(scoring_key, 0) >= self.min_observations,
         )
         self.n_scored += 1
         return scored
@@ -419,15 +495,29 @@ class PartitionedRanker:
         for result in results:
             key = partition_key(result, self.how)
             encoder, filt = self._for(key)
-            filt.observe(
-                self.flyhash.tag_valued(encoder.encode(result)[None, :]), when=self._when()
-            )
+            tag = self.flyhash.tag_valued(encoder.encode(result)[None, :])
+            filt.observe(tag, when=self._when())
             self.counts[key] += 1
+            if self.fallback_how:
+                # The fallback must learn from the same pass, or the second pass would score
+                # thin partitions against a baseline that had seen nothing.
+                #
+                # Its tag is recomputed from its *own* encoder. Observing the fine
+                # partition's tag into it would teach the host baseline tags derived from
+                # partition-local statistics - and a response alone in its partition has an
+                # encoder that has seen one record and answers "no opinion" on every
+                # channel, so the host would learn a tag that means nothing and then score
+                # real responses against it.
+                coarse_key = partition_key(result, self.fallback_how)
+                coarse_encoder, coarse_filt = self._for(coarse_key)
+                coarse_tag = self.flyhash.tag_valued(coarse_encoder.encode(result)[None, :])
+                coarse_filt.observe(coarse_tag, when=self._when())
+                self.counts[coarse_key] += 1
 
     def score_against_baseline(self, result: FfufResult) -> Scored:
-        key = partition_key(result, self.how)
+        key = self._scoring_key(result)
         encoder, filt = self._for(key)
-        tag = self.flyhash.tag_valued(encoder.encode(result)[None, :])
+        tag = self.flyhash.tag_valued(encoder.encode(result, observe=False)[None, :])
         scored = Scored(
             result=result,
             novelty=float(filt.score_excluding(tag)[0]),
@@ -440,6 +530,19 @@ class PartitionedRanker:
         self.n_scored += 1
         return scored
 
+    def _scoring_key(self, result: FfufResult) -> str:
+        """The finest partition that has seen enough to have an opinion.
+
+        Without this, a `shape` partition holding one response scores that response against
+        a baseline consisting of itself, which - leave-one-out - means nothing has depressed
+        its cells and it is maximally novel by construction. `--per dir` shipped that bug
+        once already, scoring 1.000 on partitions of one.
+        """
+        key = partition_key(result, self.how)
+        if self.fallback_how and self.counts.get(key, 0) < self.min_observations:
+            return partition_key(result, self.fallback_how)
+        return key
+
     @property
     def saturation(self) -> float:
         """Mean saturation across partitions, for the footer."""
@@ -449,7 +552,7 @@ class PartitionedRanker:
 
     def score_only(self, result: FfufResult) -> Scored:
         """Score against the stored baseline: no learning, no leave-one-out. See `Ranker`."""
-        key = partition_key(result, self.how)
+        key = self._scoring_key(result)
         encoder, filt = self._for(key)
         tag = self.flyhash.tag_valued(encoder.encode(result)[None, :])
         scored = Scored(

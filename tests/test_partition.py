@@ -238,3 +238,96 @@ def test_a_mismatched_partitioned_baseline_is_refused(tmp_path):
         wrong = PartitionedRanker(how="host", time_base="wallclock", min_observations=1, seed=7)
         with pytest.raises(BaselineMismatch, match="seed"):
             store.restore_all_into("sweep", wrong)
+
+
+def _shaped(word, length, status=200):
+    return FfufResult(
+        inputs={"FUZZ": word},
+        url=f"http://h/{word}",
+        status=status,
+        length=length,
+        words=max(length // 11, 1),
+        lines=max(length // 70, 1),
+        content_type="text/html",
+        host="h",
+        duration_ms=1.0,
+    )
+
+
+def test_shape_splits_one_host_by_kind_of_page():
+    """`host` and `dir` split by where a response came from; `shape` by what it looks like."""
+    small = _shaped("a", 300)
+    big = _shaped("b", 30_000)
+    missing = _shaped("c", 300, status=404)
+    assert partition_key(small, "host") == partition_key(big, "host")
+    assert partition_key(small, "shape") != partition_key(big, "shape"), "size decade splits"
+    assert partition_key(small, "shape") != partition_key(missing, "shape"), "status splits"
+    assert partition_key(small, "shape") == partition_key(_shaped("d", 310), "shape"), (
+        "the same decade is the same shape - the bucket must be coarse enough to hold a "
+        "population, or every unusual response gets a private partition"
+    )
+
+
+def test_a_thin_shape_falls_back_instead_of_scoring_itself_against_itself():
+    """A partition of one has nothing to be unlike.
+
+    `--per dir` shipped this bug once: partitions of one scored 1.000 and meant nothing by
+    it. `shape` is fine-grained enough to produce them constantly, so the fallback is not
+    an optimisation - it is what makes the partition usable at all.
+    """
+    stream = [_shaped(f"n{i}", 900 + (i % 3)) for i in range(200)]
+    alone = _shaped("alone", 40_000)
+    ranker = PartitionedRanker(how="shape")
+    ranker.observe_only([*stream, alone])
+    scored = ranker.score_against_baseline(alone)
+    assert scored.partition == "h", "scored against the host, not its own partition of one"
+    assert ranker.fallback_how == "host"
+
+
+def test_a_populated_shape_scores_against_its_own_population():
+    stream = [_shaped(f"n{i}", 900 + (i % 3)) for i in range(200)]
+    ranker = PartitionedRanker(how="shape")
+    ranker.observe_only(stream)
+    scored = ranker.score_against_baseline(stream[0])
+    assert scored.partition.startswith("h|200|"), "its own shape is settled, so it is used"
+    assert scored.settled
+
+
+def test_offline_scoring_does_not_move_the_baseline_it_scores_against():
+    """Pass two reads the statistics pass one built; it must not keep updating them.
+
+    While it did, a record's score depended on how many other records had been scored
+    before it. On bench-token that was worth the difference between rank 8 and rank 1998
+    for the subtlest labelled response.
+
+    Asserted as the invariant rather than through a score, because a score only moves when
+    the statistics move *enough*: an earlier version of this test compared two novelties on
+    a stream of near-identical responses, where 50 more observations shifted the mean by
+    almost nothing, and it passed with the bug still in place.
+    """
+    stream = [_shaped(f"n{i}", 900 + (i % 5)) for i in range(120)]
+    stream += [_shaped(f"big{i}", 40_000 + i) for i in range(40)]
+
+    for how in ("none", "host", "shape"):
+        ranker = rank_builder(how)
+        ranker.observe_only(stream)
+        before = encoder_state(ranker)
+        for item in stream:
+            ranker.score_against_baseline(item)
+        assert encoder_state(ranker) == before, (
+            f"--per {how}: pass two moved the statistics it was scoring against"
+        )
+
+
+def rank_builder(how: str):
+    from flypaper.rank.score import Ranker
+
+    return Ranker() if how == "none" else PartitionedRanker(how=how)
+
+
+def encoder_state(ranker) -> tuple:
+    """How much every encoder in the ranker has learned. Must not change in pass two."""
+    encoders = getattr(ranker, "encoders", None)
+    if encoders is None:
+        return (ranker.encoder.n_seen,)
+    return tuple(sorted((key, enc.n_seen) for key, enc in encoders.items()))

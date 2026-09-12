@@ -53,17 +53,31 @@ class Encoder:
     def __len__(self) -> int:
         return len(self.channel_set)
 
-    def encode(self, result: FfufResult) -> np.ndarray:
-        if self.observe_first:
+    def encode(self, result: FfufResult, *, observe: bool = True) -> np.ndarray:
+        """Encode one result, optionally without folding it into the running statistics.
+
+        `observe=False` is what "score against a baseline" should always have meant. A
+        second pass over a completed run, or a `fly watch` scoring against a stored
+        baseline, is supposed to hold the baseline still - but the statistics the channels
+        z-score against live in the encoder, and every call was updating them. So the
+        answer depended on how many other responses happened to be encoded first, and two
+        callers scoring the same response against the same baseline could disagree.
+
+        It is not a small effect where it matters. On `bench-token`, whose subtlest hit sits
+        eight words from the baseline, the drift was enough to move that hit between rank 8
+        and rank 1998 depending only on which encoder the caller had stepped.
+        """
+        if observe and self.observe_first:
             self.context.observe(result)
         vector = np.fromiter(
             (channel.fn(result, self.context) for channel in self.channel_set.channels),
             dtype=np.float32,
             count=len(self.channel_set),
         )
-        if not self.observe_first:
+        if observe and not self.observe_first:
             self.context.observe(result)
-        self.n_seen += 1
+        if observe:
+            self.n_seen += 1
         # A channel that returns NaN would poison every downstream distance silently.
         return np.nan_to_num(vector, nan=0.0, posinf=1.0, neginf=0.0)
 

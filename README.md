@@ -101,6 +101,24 @@ buries the worst at rank 6,762; one baseline per host finds all 27 by rank 33
 host's real page shaped exactly like the other host's noise — the shared baseline scores
 both hits at 0.0000, which is not a low rank but no signal at all.
 
+**The same argument applies inside one host, and it is worth more there than anything else
+measured in this project.** A host that serves seven different response populations — an
+HTML 404, a login redirect, a JSON refusal, a soft-404, a stack trace — has one standard
+deviation spanning all seven. A page 25% away from its *own* population's size sits well
+under one sigma of the whole and reads as unremarkable. That is not something a better
+projection can fix: the information is in the stream and a single baseline averages it
+away. `--per shape` gives each kind of page its own baseline, splitting on status and size
+decade. On `bench-sprawl` it moves the hardest labelled response from a median rank of 823
+to 10, and from a spread of 46–1,590 across seeds to 7–32; on `bench-mixed`, from 23 to a
+flat 6 on every seed. It is not free: on a single-population surface whose size jitters it
+is slightly worse (median 9 against 8), because splitting a population that did not need
+splitting makes each piece thinner. So it is an option, not the default.
+
+Partitions of one are the hazard, and this repository has already shipped that bug once —
+`--per dir` scored 1.000 on partitions holding a single response that had nothing to be
+unlike. A shape too thin to have an opinion does not score; its responses fall back to the
+host baseline.
+
 **It behaves the same on real targets.** Seven hosts across three public bug bounty
 programs, 1,022 requests ([reports/live-targets.md](reports/live-targets.md)). The encoder
 collapsed 404 walls of 21 b, 13 kB and 33 kB with no configuration and put the structurally
@@ -140,6 +158,9 @@ ffuf -mc all -json -u https://HOST/FUZZ -w list.txt:FUZZ -w hosts.txt:HOST | fly
 
 # a recursive scan, one baseline per directory
 ffuf -mc all -json -recursion -u http://host/FUZZ -w list.txt | fly rank --per dir
+
+# one host serving several kinds of page - a baseline per kind, not one for all of them
+ffuf -mc all -json -u http://host/FUZZ -w list.txt | fly rank --per shape
 
 # a completed results file, scored in two passes
 fly rank results.json --top 20
