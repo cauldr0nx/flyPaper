@@ -22,6 +22,7 @@ import argparse
 import json
 import subprocess
 import sys
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -113,6 +114,20 @@ SURFACES: dict[str, dict] = {
         "target": "bench/target/server.py (ours)",
         "authorization": "our own code, loopback only",
     },
+    "bench-sprawl": {
+        "url": f"{BENCH}/sprawl/FUZZ",
+        "hits": _bench_hits("/sprawl/"),
+        "subtle_hits": _bench_subtle("/sprawl/"),
+        "scenario": (
+            "seven noise populations across four content types and six status codes, each "
+            "jittering internally so nothing repeats byte-for-byte - a second, "
+            "differently-built heterogeneous surface, captured to test whether the "
+            "measured fan-in distribution reproduces off bench-mixed"
+        ),
+        "target": "bench/target/server.py (ours)",
+        "authorization": "our own code, loopback only",
+        "wordlist": "sprawl-words.txt",
+    },
     "bench-stable": {
         "url": f"{BENCH}/stable/FUZZ",
         "hits": _bench_hits("/stable/"),
@@ -140,13 +155,54 @@ def ffuf_available() -> bool:
     return True
 
 
-def capture(name: str, rate: int, threads: int) -> dict:
+def preflight(name: str) -> None:
+    """Refuse to capture against a target that does not know this surface.
+
+    Our own bench target serves its ground truth at `/labels.json`, so we can ask it what
+    it thinks it is serving rather than assume. Without this, a stale process already
+    holding the port answers every request with its generic fallback, ffuf records 1,998
+    perfectly well-formed responses, and the corpus looks fine: same record count, same
+    schema, one noise population instead of seven. That happened. Nothing downstream can
+    detect it, because "every response identical" is a legitimate thing for a surface to
+    be - `bench-stable` is exactly that on purpose.
+
+    Only applies to our own target. ffufme and live hosts publish no such manifest, and
+    guessing one from response shape would be the same assumption this exists to remove.
+    """
     surface = SURFACES[name]
-    wordlist = WORDLIST
+    if not surface["url"].startswith(BENCH):
+        return
+    try:
+        with urllib.request.urlopen(f"{BENCH}/labels.json", timeout=5) as response:
+            served = json.loads(response.read())
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"[{name}] cannot read {BENCH}/labels.json: {exc}\n"
+            f"Start it with: python bench/target/server.py --port {BENCH.rsplit(':', 1)[1]}"
+        ) from exc
+
+    prefix = "/" + surface["url"].removeprefix(BENCH + "/").split("/", 1)[0] + "/"
+    known = {path.rsplit("/", 1)[-1] for path in served if path.startswith(prefix)}
+    missing = sorted(set(surface["hits"]) - known)
+    if missing:
+        raise SystemExit(
+            f"[{name}] the server on {BENCH} does not serve {prefix} as this surface "
+            f"defines it - it has no labels for {missing}.\n"
+            f"An older process is almost certainly still holding the port. Find it with "
+            f"`ss -lptn 'sport = :{BENCH.rsplit(':', 1)[1]}'` and restart the target."
+        )
+
+
+def capture(name: str, rate: int, threads: int) -> dict:
+    preflight(name)
+    surface = SURFACES[name]
+    # A surface may bring its own haystack; bench-sprawl does, so that adding it could not
+    # rewrite the list every already-published number was measured in.
+    wordlist = CORPUS / surface["wordlist"] if surface.get("wordlist") else WORDLIST
     if surface.get("live"):
         rate = min(rate, LIVE_RATE_CEILING)
         threads = min(threads, 4)
-        words = WORDLIST.read_text(encoding="utf-8").split("\n")
+        words = wordlist.read_text(encoding="utf-8").split("\n")
         if len([w for w in words if w]) > LIVE_MAX_REQUESTS:
             wordlist = CORPUS / f".live-{LIVE_MAX_REQUESTS}.txt"
             kept = [w for w in words if w][:LIVE_MAX_REQUESTS]
@@ -166,7 +222,13 @@ def capture(name: str, rate: int, threads: int) -> dict:
         "-u",
         surface["url"],
         "-w",
-        str(WORDLIST),
+        # `wordlist`, not `WORDLIST`. These were different names for most of this file's
+        # life and the command used the wrong one, so the live-surface truncation below was
+        # computed, written to disk, named in the provenance record - and never passed to
+        # ffuf. A live capture sent the full list every time. That safeguard exists because
+        # a 2,000-word run at a polite 10/s tripped a real target's edge protection, which
+        # is exactly what it was supposed to prevent, and the provenance said it had.
+        str(wordlist),
         "-noninteractive",
         "-t",
         str(threads),
@@ -229,6 +291,13 @@ def main() -> int:
         raise SystemExit("ffuf is not on PATH")
     if not WORDLIST.exists():
         raise SystemExit(f"{WORDLIST} is missing. Run: python bench/make_corpus_words.py")
+    for chosen_name in names:
+        own = SURFACES[chosen_name].get("wordlist")
+        if own and not (CORPUS / own).exists():
+            raise SystemExit(
+                f"{CORPUS / own} is missing. Run: python bench/make_corpus_words.py "
+                f"--surface {chosen_name} --out bench/corpus/{own}"
+            )
 
     manifest_path = CORPUS / "manifest.json"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}

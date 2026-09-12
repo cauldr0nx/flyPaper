@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from scipy.stats import mannwhitneyu
+from scipy.stats import mannwhitneyu, wilcoxon
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -53,7 +53,7 @@ CHANNEL_SET = "v3-response"
 #: Measured, not asserted: the file grew when attribution was added to it and three
 #: reports went stale claiming the old number.
 _CLAW_FILE_BYTES = (REPO_ROOT / "flypaper" / "brain" / "claw-degrees.json").stat().st_size
-SURFACES_USED = ("bench-mixed", "bench-token", "bench-collide", "bench-stable")
+SURFACES_USED = ("bench-mixed", "bench-sprawl", "bench-token", "bench-collide", "bench-stable")
 SEEDS = tuple(range(64))
 VARIANTS = ("uniform-6", "uniform-5", "degree-sampled")
 
@@ -99,6 +99,11 @@ def main() -> int:
     RAW.write_text(json.dumps({k: {j: v.tolist() for j, v in r.items()} for k, r in table.items()}))
     write_report(table)
     return 0
+
+
+def _saturated(a, b) -> bool:
+    """Both variants gave the identical answer on every seed: the surface measures nothing."""
+    return len(set(a)) == 1 and len(set(b)) == 1 and a[0] == b[0]
 
 
 def write_report(table: dict) -> None:
@@ -150,71 +155,100 @@ def write_report(table: dict) -> None:
         "not equally important: a median of 8 against 9 is invisible to an operator, and a "
         "worst case of 482 is a hit nobody ever scrolls to.\n"
     )
-    add("| Surface | `uniform-5` | `degree-sampled` | worst case: 6 / 5 / sampled |")
-    add("|---|---|---|---|")
+    add(
+        "| Surface | `uniform-5` | `degree-sampled` | `degree-sampled` paired | "
+        "seeds better / worse |"
+    )
+    add("|---|---|---|---|---|")
     for surface, row in table.items():
         base = row["uniform-6"]
         cells = []
         for kind in ("uniform-5", "degree-sampled"):
-            if len(set(base)) == 1 and len(set(row[kind])) == 1 and base[0] == row[kind][0]:
+            if _saturated(base, row[kind]):
                 cells.append("tied - saturated")
                 continue
             pv = mannwhitneyu(row[kind], base, alternative="less").pvalue
             verdict = "better" if pv < 0.05 else ("worse" if pv > 0.95 else "no difference")
             cells.append(f"p={pv:.4f} ({verdict})")
-        worst = " / ".join(f"{row[k].max():.0f}" for k in VARIANTS)
-        add(f"| `{surface}` | " + " | ".join(cells) + f" | {worst} |")
+        sampled = row["degree-sampled"]
+        if _saturated(base, sampled):
+            cells += ["tied - saturated", "-"]
+        else:
+            paired = wilcoxon(sampled, base, alternative="less").pvalue
+            diff = sampled - base
+            cells.append(f"p={paired:.4f}")
+            cells.append(f"{int((diff < 0).sum())} / {int((diff > 0).sum())} of {len(base)}")
+        add(f"| `{surface}` | " + " | ".join(cells) + " |")
     add("")
+    add(
+        "Both tests are reported because they disagree. Mann-Whitney treats the two sets of "
+        "seeds as independent samples; Wilcoxon pairs them by seed, which is the more "
+        "conservative reading and the defensible one here, since both variants are built "
+        "from the same RNG stream. Where a result survives only the unpaired test, it is "
+        "not a result.\n"
+    )
 
     add("## Interpretation\n")
-    mixed, token = table.get("bench-mixed"), table.get("bench-token")
-    if mixed is not None:
-        pv = mannwhitneyu(mixed["degree-sampled"], mixed["uniform-6"], alternative="less").pvalue
+    mixed, sprawl = table.get("bench-mixed"), table.get("bench-sprawl")
+    if mixed is not None and sprawl is not None:
+        m_un = mannwhitneyu(mixed["degree-sampled"], mixed["uniform-6"], alternative="less")
+        m_pa = wilcoxon(mixed["degree-sampled"], mixed["uniform-6"], alternative="less")
+        s_un = mannwhitneyu(sprawl["degree-sampled"], sprawl["uniform-6"], alternative="less")
         add(
-            f"**On a surface whose noise is several populations, it works.** `bench-mixed` "
-            f"median worst-hit rank falls from {np.median(mixed['uniform-6']):.0f} to "
-            f"{np.median(mixed['degree-sampled']):.0f}, p={pv:.4f}. That is the whole "
-            f"positive result, and it rests on one surface.\n"
+            f"**It did not replicate.** The first version of this measured `bench-mixed` "
+            f"alone, found the measured fan-in spread cut the median worst-hit rank from "
+            f"{np.median(mixed['uniform-6']):.0f} to {np.median(mixed['degree-sampled']):.0f} "
+            f"at p={m_un.pvalue:.4f}, and said in as many words that a second heterogeneous "
+            f"surface reproducing it would be worth more than any further analysis of the "
+            f"first. `bench-sprawl` is that surface - seven populations against four, each "
+            f"jittering internally, built and captured before the projection was run against "
+            f"it. On it the median goes the *wrong* way, "
+            f"{np.median(sprawl['uniform-6']):.0f} to "
+            f"{np.median(sprawl['degree-sampled']):.0f}, p={s_un.pvalue:.4f}.\n"
         )
+        add(
+            f"**And the surviving result does not survive pairing.** On `bench-mixed` "
+            f"itself, pairing the seeds instead of treating them as independent samples "
+            f"takes p={m_un.pvalue:.4f} to p={m_pa.pvalue:.4f}. One nominally significant "
+            f"result, on one surface, under one of two reasonable tests, with no correction "
+            f"for the several variants and surfaces tried, is what noise looks like.\n"
+        )
+    add(
+        "**So the honest verdict is that the measured fan-in distribution does not help.** "
+        "That is a real answer to the question `reports/connectome-on-workload.md` raised, "
+        "and it closes the last route by which the connectome was contributing anything to "
+        "this tool's ranking. `--projection degree-sampled` stays in the code because it is "
+        "the control that makes the connectome comparison interpretable, and because "
+        "removing a variant because its result was negative is how a benchmark suite starts "
+        "lying. It is not recommended and it is not the default.\n"
+    )
+    token = table.get("bench-token")
     if token is not None:
         add(
-            f"**On `bench-token` it trades a median it cannot spend for a tail that "
-            f"matters.** The median goes the wrong way, "
-            f"{np.median(token['uniform-6']):.0f} to "
-            f"{np.median(token['degree-sampled']):.0f}, which is what the rank test sees and "
-            f"why it reports a loss. But the mean falls from {token['uniform-6'].mean():.1f} "
-            f"to {token['degree-sampled'].mean():.1f}, the p90 from "
-            f"{np.percentile(token['uniform-6'], 90):.0f} to "
-            f"{np.percentile(token['degree-sampled'], 90):.0f}, and the worst seed from "
-            f"{token['uniform-6'].max():.0f} to {token['degree-sampled'].max():.0f}. One "
-            f"position of median is invisible; a hit at rank {token['uniform-6'].max():.0f} "
-            f"is one nobody finds. Read as a rank test this is a loss, and read as an "
-            f"operator it is the better projection.\n"
+            f"**One thing is left, and it is small.** `bench-token` has a rare catastrophic "
+            f"seed under `uniform-6` - the worst of 64 puts the hardest hit at rank "
+            f"{token['uniform-6'].max():.0f}, and its p99 is "
+            f"{np.percentile(token['uniform-6'], 99):.0f}. Under `degree-sampled` the worst "
+            f"of 64 is {token['degree-sampled'].max():.0f}. That is one surface and a "
+            f"handful of seeds, nowhere near enough to act on, and it is recorded here only "
+            f"so that it is not rediscovered later and mistaken for a new result.\n"
         )
     if mixed is not None:
         five = mannwhitneyu(mixed["uniform-5"], mixed["uniform-6"], alternative="less").pvalue
         add(
-            f"**It is the spread, not the mean.** The obvious deflationary explanation is "
-            f"that the measured mean is 5.4 and the baseline uses 6, so the claim reduces to "
-            f"'fewer claws'. `uniform-5` tests that directly and fails it: no different on "
-            f"`bench-mixed` (p={five:.4f}), and much worse on `bench-token` and "
-            f"`bench-collide`, where it turns a saturated surface back into an unreliable "
-            f"one. Matching the mean is not merely insufficient, it is harmful. Only drawing "
-            f"the fan-in from the measured *distribution* helps.\n"
+            f"**`uniform-5` remains a clean negative.** Matching the measured *mean* fan-in "
+            f"is not merely insufficient, it is harmful: no different on `bench-mixed` "
+            f"(p={five:.4f}) and much worse on `bench-token` and `bench-collide`, where it "
+            f"turns a surface every other variant saturates into an unreliable one. "
+            f"Whatever the published fan-in of 6 is doing, moving it is not free.\n"
         )
     add(
-        "**Why it might work.** A uniform fan-in gives every Kenyon cell the same receptive "
-        "field size, so the whole layer generalises at one scale. A spread of fan-ins gives "
-        "some cells narrow fields and some wide, so a baseline made of several different "
-        "response populations can be absorbed at several scales at once. That is a "
-        "hypothesis consistent with the measurement and with where the effect appears; it "
-        "is not established by it.\n"
-    )
-    add(
-        "**What would change this.** One surface carries the positive result. The p-values "
-        "are uncorrected across the variants and surfaces tried, and several were tried. "
-        "The hits are planted rather than real. A second heterogeneous surface that "
-        "reproduced it would be worth more than any further analysis of this one.\n"
+        "**What this cost and what it bought.** A result was published on one surface and "
+        "retracted on two. The retraction is the point: the falsification criterion was "
+        "written into the report before the surface existed, which is the only reason it "
+        "could fire. `bench-sprawl` stays in the corpus - it is the hardest surface here by "
+        "a wide margin, every variant leaves the worst hit past rank 250, and that makes it "
+        "the most useful thing to build against next.\n"
     )
 
     OUT.write_text("\n".join(lines) + provenance_footer(seed=0))

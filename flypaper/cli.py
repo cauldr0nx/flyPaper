@@ -541,12 +541,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("random", "degree-sampled", "connectome"),
         default="random",
         help=(
-            "random is the published FlyHash baseline and the default. degree-sampled keeps "
-            "random targets but draws each cell's fan-in from the measured claw-count "
-            "histogram, which halved the median worst-hit rank on a surface whose noise is "
-            "several populations and did nothing on surfaces where it is one; it needs no "
-            "download. connectome uses the full measured wiring, needs --circuit and a "
-            "55-channel encoder, and did not beat its own degree-preserving null."
+            "random is the published FlyHash baseline and the default, and nothing has "
+            "beaten it. degree-sampled draws each cell's fan-in from the measured "
+            "claw-count histogram; it looked better on one surface and did not reproduce "
+            "on a second, so it is a research control rather than a recommendation "
+            "(reports/claw-degrees.md). connectome uses the full measured wiring, needs "
+            "--circuit and a 55-channel encoder, and did not beat its own "
+            "degree-preserving null."
         ),
     )
     ranker.add_argument(

@@ -61,13 +61,20 @@ the advantage is not in *which* glomerulus reaches which Kenyon cell. It is in h
 the claws are spread: the published model gives every cell the same fan-in, the measured
 circuit gives them 1 to 29.
 
-That part is 13 numbers rather than 508 MB, so it ships as `--projection degree-sampled`
-([reports/claw-degrees.md](reports/claw-degrees.md)). On a surface whose noise is several
-response populations rather than one, it cuts the median rank of the hardest hit from 29 to
-9. On another it gives up a single position of median and removes the tail instead — the
-worst seed goes from rank 482 to 18, which is the difference between a hit nobody scrolls to
-and one on the first screen. On surfaces where every projection already puts every hit at
-the top, it does nothing. It is not a general improvement and it is not the default. Running that comparison at all first required admitting the connectome had never
+That part is 13 numbers rather than 508 MB, so it was implemented as
+`--projection degree-sampled` and measured. On `bench-mixed` it cut the median rank of the
+hardest hit from 29 to 9, p=0.03, and that was written up as the one thing the connectome
+contributed. **It did not replicate.** A second heterogeneous surface, `bench-sprawl` —
+seven noise populations against four, each jittering internally, built and captured before
+the projection was ever run against it — shows no effect (p=0.52), and the original result
+does not survive pairing the seeds on its own surface (p=0.03 → p=0.17). One nominally
+significant result out of two surfaces, uncorrected, is what noise looks like.
+
+So nothing from the connectome currently improves this tool's ranking, and
+[reports/claw-degrees.md](reports/claw-degrees.md) retracts the claim rather than burying
+it. The option stays in the code as the control that makes the connectome comparison
+interpretable; it is not recommended and not the default. The falsification criterion was
+written into the report before the surface existed, which is the only reason it could fire. Running that comparison at all first required admitting the connectome had never
 been usable with the real encoder — it needs exactly 55 input channels and the default
 encoder produced 39, so every earlier measurement of it was made on reduced image data.
 
@@ -187,9 +194,12 @@ that prints eight lines, and all eight are the planted hits.
 
 ### The dashboard
 
-A page showing what the circuit is doing: the run's log on a monitor, the mushroom body's
-**measured** synapses lighting up as tags fire, and the novelty traces with the cutoff the
-run actually used.
+A page showing what the circuit is doing, on one screen: the run's log on a monitor beside
+the mushroom body's **measured** synapses, and the novelty traces with the cutoff the run
+actually used. The synapses move with the scan in both directions — a synapse flashes when
+the current response's tag selects the Kenyon cell that owns it, and settles back to
+whatever weight that response left it holding, so the lobe goes dark exactly where the run
+has learned a baseline.
 
 ```bash
 python -m flypaper.web.export                     # circuit geometry (needs the MaleCNS tables)
@@ -205,9 +215,10 @@ published to the internet, and a test asserts that. For HTTPS on a name with no 
 `tailscale serve` needs rights it does not have by default — run `sudo tailscale set
 --operator=$USER` once, then `--tailscale` will set it up.
 
-Two panels, deliberately separate, because only one of them is data. The mushroom body is
-measured: every point is a location in MaleCNS EM space, and the α′3 synapses it lights are
-the Bloom filter's own weights. The workstation is staging: the fly is a real anatomical
+Two panels, side by side, deliberately separate because only one of them is data. The
+mushroom body is measured: every point is a location in MaleCNS EM space, and the α′3
+synapses it lights are the Bloom filter's own weights — recorded per response by
+`flypaper.web.replay`, not generated in the browser. The workstation is staging: the fly is a real anatomical
 model but nothing about its pose is computed, and it is not spatially registered to the
 connectome. The page says so on the page.
 

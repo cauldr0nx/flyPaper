@@ -24,11 +24,12 @@ projections are implemented so the difference can be attributed:
     The measured MaleCNS projection, synapse counts and all.
 
 `degree-sampled`
-    Random targets, but fan-in drawn from the measured claw-count histogram rather than
-    fixed. This one exists because of what the comparison found: the connectome beats
-    `random` and does *not* beat `random-matched`, so the advantage was never in which
-    glomerulus reaches which cell - it was in how unevenly the claws are spread. That is
-    13 numbers, so it ships without the connectome.
+    Random targets, with fan-in drawn from the measured claw-count histogram rather than
+    fixed. It exists because the connectome beats `random` and does *not* beat
+    `random-matched`, so whatever it was contributing was in how unevenly the claws are
+    spread rather than in which glomerulus reaches which cell - and that is 13 numbers, so
+    it needs no download. Measured directly, it does not reproduce (reports/claw-degrees.md)
+    and is not recommended.
 
 A comparison against only the uniform baseline would not be able to tell structure from
 degree, so all three are reported.
@@ -122,17 +123,23 @@ def degree_sampled_projection(
     """Random targets, but the fly's spread of fan-in rather than one uniform number.
 
     The published FlyHash gives every Kenyon cell the same number of claws. The measured
-    circuit does not: the count runs from 1 to 29 around a mean of 5.4, and that spread -
-    not the mean - is what carries the advantage. Measured on `bench-mixed`, whose noise is
-    several different response populations rather than one, this halves both the median
-    worst-hit rank (29 to 10) and its tail (p90 537 to 275), p=0.02 over 64 seeds. On
-    surfaces whose noise is effectively one population it is neutral.
+    circuit does not: the count runs from 1 to 29 around a mean of 5.4.
 
-    A uniform fan-in of 5, which matches the measured *mean*, is markedly worse than the
-    uniform 6 it replaces - so this is not simply a smaller number of claws.
+    **This is a research control, not a recommendation.** On `bench-mixed` the spread cut
+    the median worst-hit rank from 29 to 9 (p=0.03), which was published as the one thing
+    the connectome contributed that a random projection would not have suggested. It did
+    not reproduce: on `bench-sprawl`, a second heterogeneous surface built and captured
+    before this was run against it, there is no effect (p=0.52), and the original result
+    does not survive pairing the seeds on its own surface (p=0.17). See
+    reports/claw-degrees.md, which retracts it.
 
-    See reports/connectome-on-workload.md. This is the one thing in the tool that the
-    connectome contributed and a random projection would not have suggested.
+    It stays because it is the control that makes the connectome comparison interpretable -
+    the measured wiring beats a random projection and does not beat this - and because
+    deleting a variant for returning a negative is how a benchmark suite starts lying.
+
+    One clean negative worth keeping: a uniform fan-in of 5, matching the measured *mean*,
+    is markedly worse than the uniform 6 it replaces. Moving the published fan-in is not
+    free in either direction.
     """
     rng = rng or np.random.default_rng(0)
     degrees = np.minimum(rng.choice(claw_degrees(), n_kc, replace=True), n_channels)

@@ -39,6 +39,20 @@ Surfaces
                   200 status of the population they sit in, which is the only way to be
                   genuinely hidden: a hit whose status already differs is not subtle.
 
+`/sprawl/<word>`  A second heterogeneous surface, built differently from `/mixed/` on
+                  purpose. `/mixed/` has four crisp populations with *no* variation inside
+                  them, which is tidier than any real host. Here there are seven, each
+                  jittering internally the way a real one does - a request id in the body,
+                  a rotating cache tag, a variable-length path echo - across four content
+                  types and six status codes. So the noise is heterogeneous *and* nothing
+                  in it repeats byte-for-byte.
+
+                  It exists to test one claim. `reports/claw-degrees.md` found the measured
+                  fan-in distribution helps on `/mixed/` and said, in as many words, that a
+                  second heterogeneous surface reproducing it would be worth more than any
+                  further analysis of the first. This is that surface, and it was built
+                  before the projection was run against it.
+
 `/collide/<word>` The ffuf issue #387 case with the status code taken away. Same word-count
                   collision as `/calib/`, but the noise answers **200** rather than 404, so
                   autocalibration has nothing but size, words and lines to work with. This
@@ -104,6 +118,15 @@ HIT_SHAPES: dict[str, tuple[int, int, str]] = {
     "/mixed/.env": (40, 7, "env"),  # 200, but a shape nothing else has
     "/mixed/status": (196, 35, "status"),  # 200, against a 200 cluster at 190/34
     "/mixed/internal": (182, 32, "internal"),  # 200, against a 200 cluster at 190/34
+    # Sprawl surface: seven jittering populations. The hits span the same obvious-to-subtle
+    # range, and the subtle ones sit inside a population that is itself moving.
+    "/sprawl/backup.tar.gz": (1600, 170, "dump"),  # unmissable
+    "/sprawl/admin": (640, 84, "adminpanel"),
+    "/sprawl/graphql": (290, 44, "schema"),
+    "/sprawl/.env": (44, 8, "env"),  # 200, a shape nothing else has
+    "/sprawl/metrics": (216, 40, "metrics"),  # 200, against the 200 cluster at 210/38
+    "/sprawl/health": (204, 36, "health"),  # 200, against the 200 cluster at 210/38
+    "/sprawl/debug.log": (63, 15, "debuglog"),  # 500-shaped, against the 500 cluster
     # Stable surface. Baseline is (60, 10).
     "/stable/backup": (310, 52, "backup"),
     "/stable/admin": (620, 80, "admin"),
@@ -122,6 +145,19 @@ MIXED_CLUSTERS = (
     (2, 200, 190, 34, "noresults"),  # a soft-404 "nothing found" page
 )
 
+# The /sprawl/ populations: (share out of 40, status, words, lines, filler, content type).
+# Seven of them, deliberately more lopsided than /mixed/'s four, and every one of them
+# jitters internally - see `_sprawl_page`. A real scan's baseline is not four clean shapes.
+SPRAWL_CLUSTERS = (
+    (14, 404, 120, 22, "missing", "text/html"),
+    (8, 200, 210, 38, "noresults", "text/html"),
+    (6, 301, 7, 3, "moved", "text/html"),
+    (4, 403, 28, 7, "denied", "application/json"),
+    (3, 200, 15, 4, "apiempty", "application/json"),
+    (3, 401, 18, 5, "unauth", "application/json"),
+    (2, 500, 60, 14, "error", "text/plain"),
+)
+
 #: Hits whose shape sits within a few percent of their surface's noise baseline. Reported
 #: separately at M4: a ranker that only finds the obvious ones is not doing much.
 SUBTLE = frozenset(
@@ -136,6 +172,10 @@ SUBTLE = frozenset(
         "/mixed/internal",
         "/collide/staging",
         "/collide/legacy",
+        "/sprawl/.env",
+        "/sprawl/metrics",
+        "/sprawl/health",
+        "/sprawl/debug.log",
         "/stable/.env",
         "/stable/old",
     }
@@ -190,6 +230,26 @@ def _page(title: str, words: int, lines: int, filler: str, token: str = "") -> b
     return body.encode()
 
 
+def _sprawl_page(path: str, words: int, lines: int, filler: str, kind: str) -> bytes:
+    """A population member that is never byte-identical to its neighbours.
+
+    `/mixed/` serves one exact page per population, which makes each population a single
+    point. Real hosts do not do that: the same error page carries a request id, a cache
+    tag, a timestamp, an echo of the path you asked for. So each population here jitters in
+    size by a few percent while its word and line counts stay put - exactly the shape that
+    makes `-fs` useless and a baseline hard to learn, and the reason the jitter is here
+    rather than left to `/token/` alone.
+
+    Deterministic in `path`, so the capture still replays identically.
+    """
+    seed = _digest("sprawl" + path)
+    body = _page(kind, words, lines, filler)
+    # A request id of variable length, inserted without adding a space or a newline so the
+    # word and line counts ffuf derives are untouched and only Content-Length moves.
+    marker = hashlib.sha256((SEED + "req" + path).encode()).hexdigest()[: 12 + seed % 11]
+    return body.replace(b"<html>", b"<html><!--req:" + marker.encode() + b"-->", 1)
+
+
 def counts(body: bytes) -> tuple[int, int]:
     """(words, lines) exactly as ffuf counts them. Used by the tests and `--describe`."""
     return body.count(b" ") + 1, body.count(b"\n") + 1
@@ -219,6 +279,16 @@ def build_response(path: str) -> tuple[int, bytes, str]:
                 return status, _page("NotFound", words, lines, filler), "text/html"
             bucket -= share
         return 404, _page("NotFound", 100, 20, "missing"), "text/html"
+
+    if path.startswith("/sprawl/"):
+        # Seven populations, each jittering internally. Which one a word lands in is a pure
+        # function of the word, as on /mixed/, so the corpus is reproducible.
+        bucket = _digest(path) % 40
+        for share, status, words, lines, filler, content_type in SPRAWL_CLUSTERS:
+            if bucket < share:
+                return status, _sprawl_page(path, words, lines, filler, "NotFound"), content_type
+            bucket -= share
+        return 404, _sprawl_page(path, 120, 22, "missing", "NotFound"), "text/html"
 
     if path.startswith("/collide/"):
         # 200, not 404: the soft-404 shape, so status separates nothing.

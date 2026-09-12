@@ -13,6 +13,9 @@ Everything below is on `v3-response`, offline mode, 64 seeds per cell. `uniform-
 | `bench-mixed` | uniform-6 | 29 | 159.8 | 537 | 986 |
 | `bench-mixed` | uniform-5 | 26 | 177.9 | 430 | 1262 |
 | `bench-mixed` | degree-sampled | 9 | 128.8 | 429 | 858 |
+| `bench-sprawl` | uniform-6 | 267 | 497.7 | 1233 | 1940 |
+| `bench-sprawl` | uniform-5 | 174 | 534.4 | 1573 | 1998 |
+| `bench-sprawl` | degree-sampled | 358 | 479.7 | 1168 | 1852 |
 | `bench-token` | uniform-6 | 8 | 19.4 | 12 | 482 |
 | `bench-token` | uniform-5 | 96 | 301.1 | 794 | 1770 |
 | `bench-token` | degree-sampled | 9 | 9.0 | 10 | 18 |
@@ -27,25 +30,30 @@ Everything below is on `v3-response`, offline mode, 64 seeds per cell. `uniform-
 
 Mann-Whitney U, one-sided, against `uniform-6`, on the rank itself. A surface where every variant ties is saturated and measures nothing. The worst case is reported beside it because the two do not always move together, and for this tool they are not equally important: a median of 8 against 9 is invisible to an operator, and a worst case of 482 is a hit nobody ever scrolls to.
 
-| Surface | `uniform-5` | `degree-sampled` | worst case: 6 / 5 / sampled |
-|---|---|---|---|
-| `bench-mixed` | p=0.4657 (no difference) | p=0.0298 (better) | 986 / 1262 / 858 |
-| `bench-token` | p=1.0000 (worse) | p=0.9889 (worse) | 482 / 1770 / 18 |
-| `bench-collide` | p=0.9604 (worse) | tied - saturated | 6 / 760 / 6 |
-| `bench-stable` | tied - saturated | tied - saturated | 6 / 6 / 6 |
+| Surface | `uniform-5` | `degree-sampled` | `degree-sampled` paired | seeds better / worse |
+|---|---|---|---|---|
+| `bench-mixed` | p=0.4657 (no difference) | p=0.0298 (better) | p=0.1674 | 36 / 24 of 64 |
+| `bench-sprawl` | p=0.2886 (no difference) | p=0.5238 (no difference) | p=0.3478 | 33 / 31 of 64 |
+| `bench-token` | p=1.0000 (worse) | p=0.9889 (worse) | p=0.7616 | 13 / 27 of 64 |
+| `bench-collide` | p=0.9604 (worse) | tied - saturated | tied - saturated | - |
+| `bench-stable` | tied - saturated | tied - saturated | tied - saturated | - |
+
+Both tests are reported because they disagree. Mann-Whitney treats the two sets of seeds as independent samples; Wilcoxon pairs them by seed, which is the more conservative reading and the defensible one here, since both variants are built from the same RNG stream. Where a result survives only the unpaired test, it is not a result.
 
 ## Interpretation
 
-**On a surface whose noise is several populations, it works.** `bench-mixed` median worst-hit rank falls from 29 to 9, p=0.0298. That is the whole positive result, and it rests on one surface.
+**It did not replicate.** The first version of this measured `bench-mixed` alone, found the measured fan-in spread cut the median worst-hit rank from 29 to 9 at p=0.0298, and said in as many words that a second heterogeneous surface reproducing it would be worth more than any further analysis of the first. `bench-sprawl` is that surface - seven populations against four, each jittering internally, built and captured before the projection was run against it. On it the median goes the *wrong* way, 267 to 358, p=0.5238.
 
-**On `bench-token` it trades a median it cannot spend for a tail that matters.** The median goes the wrong way, 8 to 9, which is what the rank test sees and why it reports a loss. But the mean falls from 19.4 to 9.0, the p90 from 12 to 10, and the worst seed from 482 to 18. One position of median is invisible; a hit at rank 482 is one nobody finds. Read as a rank test this is a loss, and read as an operator it is the better projection.
+**And the surviving result does not survive pairing.** On `bench-mixed` itself, pairing the seeds instead of treating them as independent samples takes p=0.0298 to p=0.1674. One nominally significant result, on one surface, under one of two reasonable tests, with no correction for the several variants and surfaces tried, is what noise looks like.
 
-**It is the spread, not the mean.** The obvious deflationary explanation is that the measured mean is 5.4 and the baseline uses 6, so the claim reduces to 'fewer claws'. `uniform-5` tests that directly and fails it: no different on `bench-mixed` (p=0.4657), and much worse on `bench-token` and `bench-collide`, where it turns a saturated surface back into an unreliable one. Matching the mean is not merely insufficient, it is harmful. Only drawing the fan-in from the measured *distribution* helps.
+**So the honest verdict is that the measured fan-in distribution does not help.** That is a real answer to the question `reports/connectome-on-workload.md` raised, and it closes the last route by which the connectome was contributing anything to this tool's ranking. `--projection degree-sampled` stays in the code because it is the control that makes the connectome comparison interpretable, and because removing a variant because its result was negative is how a benchmark suite starts lying. It is not recommended and it is not the default.
 
-**Why it might work.** A uniform fan-in gives every Kenyon cell the same receptive field size, so the whole layer generalises at one scale. A spread of fan-ins gives some cells narrow fields and some wide, so a baseline made of several different response populations can be absorbed at several scales at once. That is a hypothesis consistent with the measurement and with where the effect appears; it is not established by it.
+**One thing is left, and it is small.** `bench-token` has a rare catastrophic seed under `uniform-6` - the worst of 64 puts the hardest hit at rank 482, and its p99 is 239. Under `degree-sampled` the worst of 64 is 18. That is one surface and a handful of seeds, nowhere near enough to act on, and it is recorded here only so that it is not rediscovered later and mistaken for a new result.
 
-**What would change this.** One surface carries the positive result. The p-values are uncorrected across the variants and surfaces tried, and several were tried. The hits are planted rather than real. A second heterogeneous surface that reproduced it would be worth more than any further analysis of this one.
+**`uniform-5` remains a clean negative.** Matching the measured *mean* fan-in is not merely insufficient, it is harmful: no different on `bench-mixed` (p=0.4657) and much worse on `bench-token` and `bench-collide`, where it turns a surface every other variant saturates into an unreliable one. Whatever the published fan-in of 6 is doing, moving it is not free.
+
+**What this cost and what it bought.** A result was published on one surface and retracted on two. The retraction is the point: the falsification criterion was written into the report before the surface existed, which is the only reason it could fire. `bench-sprawl` stays in the corpus - it is the hardest surface here by a wide margin, every variant leaves the worst hit past rank 250, and that makes it the most useful thing to build against next.
 
 ---
 
-*Generated by flypaper 0.1.0 at commit `ff47af04ffa291af1617b6ced0dd28398277ec88` | seed `0` on 2026-09-12T02:02:19+00:00.*
+*Generated by flypaper 0.1.0 at commit `760a5021913bf164bb6242e07a259a7404d7c4a8` **(dirty working tree - not reproducible)** | seed `0` on 2026-09-12T02:34:30+00:00.*

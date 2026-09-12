@@ -40,7 +40,20 @@ from flypaper.rank.score import rank  # noqa: E402
 
 CORPUS = REPO_ROOT / "bench" / "corpus"
 OUT = REPO_ROOT / "reports" / "partitioned.md"
-MULTI_HOST_SURFACES = ("bench-mixed", "bench-token", "bench-stable", "bench-calib", "ffufme-no404")
+MULTI_HOST_SURFACES = (
+    "bench-mixed",
+    "bench-sprawl",
+    "bench-token",
+    "bench-stable",
+    "bench-calib",
+    "ffufme-no404",
+)
+
+#: Partitioning and the measured fan-in spread both address the same thing - a
+#: baseline that is several populations rather than one - so whether they compound or
+#: merely overlap is a question neither benchmark could answer alone.
+PROJECTIONS = ("random", "degree-sampled")
+SEEDS = tuple(range(8))
 
 
 def relabel(result: FfufResult, host: str) -> FfufResult:
@@ -98,8 +111,14 @@ def pathological_stream(n: int = 300) -> tuple[list[FfufResult], dict[str, set[s
     return stream, {"small.example.com": {"treasure"}, "big.example.com": {"treasure"}}
 
 
-def evaluate(stream: list[FfufResult], hits: dict[str, set[str]], how: str) -> dict:
-    scored = rank(stream, passes=2, partition=how)
+def evaluate(
+    stream: list[FfufResult],
+    hits: dict[str, set[str]],
+    how: str,
+    projection: str = "random",
+    seed: int = 0,
+) -> dict:
+    scored = rank(stream, passes=2, partition=how, projection=projection, seed=seed)
     keys = [(s.result.host, s.result.word) for s in scored]
 
     def is_hit(i: int) -> bool:
@@ -127,25 +146,48 @@ def main() -> int:
     ap.parse_args()
 
     experiments = {}
-    stream, hits = pathological_stream()
-    experiments["pathological"] = {how: evaluate(stream, hits, how) for how in ("none", "host")}
+    cross = {}
+    for label, build in (("pathological", pathological_stream), ("corpus", multi_host_stream)):
+        stream, hits = build()
+        if not stream:
+            continue
+        # The original comparison, on the default projection, unchanged.
+        experiments[label] = {how: evaluate(stream, hits, how) for how in ("none", "host")}
+        # Crossed with the projection, to see whether the two effects add or overlap.
+        for projection in PROJECTIONS:
+            for how in ("none", "host"):
+                runs = [evaluate(stream, hits, how, projection, s) for s in SEEDS]
+                cross[(label, projection, how)] = {
+                    "worst": _median([r["worst"] for r in runs]),
+                    "first": _median([r["first"] for r in runs]),
+                    "recall50": _median([r["recall"][50] for r in runs]),
+                    "total_hits": runs[0]["total_hits"],
+                }
+        print(f"  {label} crossed", file=sys.stderr)
 
-    stream, hits = multi_host_stream()
-    if stream:
-        experiments["corpus"] = {how: evaluate(stream, hits, how) for how in ("none", "host")}
-
-    write_report(experiments)
-    for name, res in experiments.items():
-        for how, m in res.items():
-            print(
-                f"  {name:13} --per {how:5} recall@50 {m['recall'][50]}/{m['total_hits']}"
-                f"  first at {m['first']}  worst at {m['worst']}",
-                file=sys.stderr,
-            )
+    write_report(experiments, cross)
+    for (label, projection, how), m in cross.items():
+        print(
+            f"  {label:13} {projection:14} --per {how:5} "
+            f"recall@50 {m['recall50']}/{m['total_hits']}  worst at {m['worst']}",
+            file=sys.stderr,
+        )
     return 0
 
 
-def write_report(experiments: dict) -> None:
+def _fmt(value) -> str:
+    return "never ranked" if value is None else f"{value:.0f}"
+
+
+def _median(values: list) -> float | None:
+    """Median that tolerates a `None` worst-rank, which means a hit was never ranked."""
+    present = sorted(v for v in values if v is not None)
+    if not present:
+        return None
+    return float(present[len(present) // 2])
+
+
+def write_report(experiments: dict, cross: dict | None = None) -> None:
     lines: list[str] = []
     add = lines.append
 
@@ -214,6 +256,77 @@ def write_report(experiments: dict) -> None:
             f"plateaus at {m_host['recall'][50]}/{m_host['total_hits']} and does not recover "
             f"by rank 100 either - the hits it has lost are lost, not merely deferred.\n"
         )
+
+    if cross:
+        add("## Crossed with the projection\n")
+        add(
+            "Partitioning and the measured fan-in spread (`reports/claw-degrees.md`) looked "
+            "like two attacks on the same problem: partitioning stops a baseline from "
+            f"having to be several populations at once, and the fan-in spread appeared to "
+            f"make a single baseline better at being several at once. Crossed here, "
+            f"{len(SEEDS)} seeds per cell, median reported.\n"
+        )
+        add(
+            "The fan-in half of that has since been retracted - it did not reproduce on a "
+            "second heterogeneous surface - and this table is one of the measurements that "
+            "says so, independently of the one that retracted it.\n"
+        )
+        labels = list(dict.fromkeys(k[0] for k in cross))
+        add(
+            "| Experiment | projection | worst, `--per none` | worst, `--per host` | "
+            "partitioning gains | recall@50, `--per host` |"
+        )
+        add("|---|---|---:|---:|---:|---:|")
+        for label in labels:
+            for projection in PROJECTIONS:
+                none_w = cross[(label, projection, "none")]["worst"]
+                host = cross[(label, projection, "host")]
+                host_w = host["worst"]
+                if none_w and host_w:
+                    gain = f"{none_w / host_w:.1f}x"
+                elif host_w:
+                    gain = "from unranked"
+                else:
+                    gain = "-"
+                add(
+                    f"| {label} | `{projection}` | {_fmt(none_w)} | {_fmt(host_w)} | {gain} "
+                    f"| {host['recall50']:.0f}/{host['total_hits']} |"
+                )
+        add("")
+        add("Worst labelled hit's rank; lower is better.\n")
+        add(
+            "**Partitioning is worth the same multiple whichever projection it is given** - "
+            "roughly 290x on the constructed worst case and 5x on the corpus sweep, in both "
+            "rows. That is the useful reading: the one measured win in this project does not "
+            "depend on any of the connectome work, and would survive all of it being "
+            "removed.\n"
+        )
+        add(
+            "**The projection on its own makes the corpus sweep worse** unpartitioned. A "
+            "multi-host stream is heterogeneous in a different way from a single host "
+            "serving several response shapes - the populations belong to different hosts "
+            "rather than different routes - and nothing about the fan-in spread addresses "
+            "that.\n"
+        )
+        add(
+            "**The two metrics disagree once partitioned, and both are reported because of "
+            "it.** On the corpus sweep the fan-in spread finds slightly more hits inside the "
+            "first fifty while placing its hardest hit further down. Neither difference is "
+            "supported by the surface-level tests in `reports/claw-degrees.md`, and the "
+            "honest reading of a split like this at 8 seeds is that it is noise. It is "
+            "tabulated rather than summarised so that it cannot be quoted one way only.\n"
+        )
+        add("### Read this way\n")
+        for label in labels:
+            base = cross[(label, "random", "none")]["worst"]
+            proj = cross[(label, "degree-sampled", "none")]["worst"]
+            part = cross[(label, "random", "host")]["worst"]
+            both = cross[(label, "degree-sampled", "host")]["worst"]
+            add(
+                f"- **{label}**: unpartitioned random {_fmt(base)}; the projection alone "
+                f"{_fmt(proj)}; partitioning alone {_fmt(part)}; both {_fmt(both)}."
+            )
+        add("")
 
     add("## What this does and does not claim\n")
     add(

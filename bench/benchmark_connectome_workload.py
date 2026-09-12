@@ -62,7 +62,14 @@ RAW = REPO_ROOT / "reports" / "data" / "connectome-on-workload.json"
 CHANNEL_SET = "v4-glomerular"
 SHIPPED_CHANNEL_SET = "v3-response"
 SHIPPED = f"random on {SHIPPED_CHANNEL_SET}"
-SURFACES_USED = ("bench-mixed", "bench-token", "bench-collide", "bench-stable", "ffufme-no404")
+SURFACES_USED = (
+    "bench-mixed",
+    "bench-sprawl",
+    "bench-token",
+    "bench-collide",
+    "bench-stable",
+    "ffufme-no404",
+)
 SEEDS = tuple(range(32))
 TOP = 25
 
@@ -368,15 +375,15 @@ def write_report(results: dict) -> None:
         "but not being confused by a baseline that is several things at once.\n"
     )
     add(
-        "**What shipped.** Not the connectome - it needs a 508 MB download, a 55-channel "
-        "encoder that is worse on its own, and it does not beat a random projection with "
-        "its fan-in distribution. The fan-in distribution did ship, as "
-        "`--projection degree-sampled`: a 13-number histogram, about a kilobyte, no "
-        "download, usable at any "
-        "channel width including the one the tool already uses. On `bench-mixed` it cuts the "
-        "median worst-hit rank from 29 to 9; on `bench-token` it gives up one position of "
-        "median and removes the tail, worst seed 482 to 18. It is not a general improvement "
-        "and is not the default. See [claw-degrees.md](claw-degrees.md).\n"
+        "**What shipped: nothing.** Not the connectome - it needs a 508 MB download, a "
+        "55-channel encoder that is worse on its own, and it does not beat a random "
+        "projection carrying its fan-in distribution. And not the fan-in distribution "
+        "either. That looked like the one thing here a random projection would not have "
+        "suggested, and it was written up as such; then it was tested on a second, "
+        "independently built heterogeneous surface and did not reproduce, and the result it "
+        "was based on turned out not to survive a paired test on its own surface. "
+        "`--projection degree-sampled` exists and is not recommended. See "
+        "[claw-degrees.md](claw-degrees.md), which retracts it.\n"
     )
     add("### What would change this\n")
     add(
