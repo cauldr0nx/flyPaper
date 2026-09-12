@@ -240,6 +240,28 @@ class Ranker:
         self.n_scored += 1
         return scored
 
+    def score_only(self, result: FfufResult) -> Scored:
+        """Score against the baseline as it stands: no learning, no leave-one-out.
+
+        Distinct from `score_against_baseline`, and the difference matters. That one
+        discounts the record's own contribution, which is right when ranking a completed run
+        where every record is *in* the baseline. When comparing a new scan against a stored
+        one the record is **not** in it, and discounting a contribution it never made
+        inflates its novelty - a page seen once last week scored 0.64 instead of 0.0, so
+        every real page on the target reported as new every week.
+        """
+        vector = self.encoder.encode(result)
+        tag = self.flyhash.tag_valued(vector[None, :])
+        scored = Scored(
+            result=result,
+            novelty=float(self.filter.score(tag, when=self._when())[0]),
+            position=self.n_scored,
+            channel_set=self.channel_set,
+            projection=self.projection,
+        )
+        self.n_scored += 1
+        return scored
+
     def stream(self, results: Iterable[FfufResult]) -> Iterator[Scored]:
         """Live mode: one pass, scoring each result against only what came before it."""
         for result in results:
@@ -404,6 +426,23 @@ class PartitionedRanker:
         if not self.filters:
             return 0.0
         return sum(f.saturation for f in self.filters.values()) / len(self.filters)
+
+    def score_only(self, result: FfufResult) -> Scored:
+        """Score against the stored baseline: no learning, no leave-one-out. See `Ranker`."""
+        key = partition_key(result, self.how)
+        encoder, filt = self._for(key)
+        tag = self.flyhash.tag_valued(encoder.encode(result)[None, :])
+        scored = Scored(
+            result=result,
+            novelty=float(filt.score(tag, when=self._when())[0]),
+            position=self.n_scored,
+            channel_set=self.channel_set,
+            projection=self.projection,
+            partition=key,
+            settled=self.counts.get(key, 0) >= self.min_observations,
+        )
+        self.n_scored += 1
+        return scored
 
     def summary(self) -> str:
         settled = sum(1 for k in self.filters if self.settled(k))

@@ -131,8 +131,18 @@ fly ingest --file results.json
 # turn a program's published scope table into a scope file, without widening it
 fly scope program-scope.csv --out scope.txt
 
+# monitoring: what is new on this target since last time
+fly watch results.json --baseline acme --per host
+
 fly baselines            # what is stored, and how stale
 ```
+
+`fly rank --baseline` learns as it goes, so a second scan of the same target reports that
+nothing is surprising — true, and useless. `fly watch` holds the baseline still and answers
+*what is here now that was not here then*, leaving it untouched unless you pass `--update`.
+It reports **structurally** new, not newly-seen: a new URL serving a page much like one the
+target already had will not be flagged, which is right for monitoring at scale and wrong if
+what you wanted was a URL diff.
 
 `-mc all` is deliberate: you want every response, including the 404 sea, because the noise
 *is* the baseline. Filtering upstream destroys the thing the filter needs — and it fails

@@ -308,6 +308,108 @@ def _rank_with_baseline(args, source, kwargs) -> int:
     return 0
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Score a scan against a saved baseline without folding it in: what is new since then.
+
+    This is the workflow the persistence and the decay exist for, and the one `fly rank
+    --baseline` does not express. `rank` learns as it goes, so by the time it prints a
+    result it has already made it familiar; asked to rank the same target twice it will
+    dutifully report that nothing is surprising, which is true and useless.
+
+    `watch` holds the baseline still. Everything is scored against what the target looked
+    like last time and nothing is written back unless asked, so the question it answers is
+    "what is here now that was not here then" rather than "what stands out today".
+
+    **It reports structurally new, not newly-seen.** A new URL that looks like a page the
+    target already served will not be flagged - `/admin-v2` at 7,321 bytes against a
+    baseline already holding `/admin` at 6,914 scores 0.296, because structurally it is the
+    same kind of page. That is the right behaviour for monitoring at scale, where a new
+    marketing page should not wake anyone, and it is the wrong tool if what you want is a
+    URL diff. The filter stores no identities, only shapes.
+    """
+    from flypaper.rank.health import StreamHealth
+    from flypaper.rank.report import Terminal, write_jsonl
+    from flypaper.rank.score import PartitionedRanker, Ranker
+    from flypaper.store.db import Store
+
+    kwargs = {"channel_set": args.channel_set, "decay_halflife": args.decay_halflife}
+    partitioned = args.per != "none"
+    health = StreamHealth()
+
+    with Store(args.db) as store:
+        # Checked before the input is read, so a typo in the name does not first wait for a
+        # scan to be parsed.
+        if args.baseline not in store.names():
+            print(
+                f"flypaper: no baseline named {args.baseline!r}. Establish one first:\n"
+                f"    fly rank <results> --baseline {args.baseline}"
+                + (f" --per {args.per}" if partitioned else ""),
+                file=sys.stderr,
+            )
+            return 1
+
+        if partitioned:
+            ranker = PartitionedRanker(how=args.per, time_base="wallclock", **kwargs)
+            restored = store.restore_all_into(args.baseline, ranker)
+            age = max((b.age_seconds for b in restored), default=0.0) / 86400.0
+            print(
+                f"flypaper: {args.baseline!r} - {len(restored)} {args.per} partitions, "
+                f"oldest {age:.1f} days old.",
+                file=sys.stderr,
+            )
+        else:
+            ranker = Ranker(time_base="wallclock", **kwargs)
+            baseline = store.restore_into(args.baseline, ranker)
+            age = baseline.age_seconds / 86400.0
+            print(
+                f"flypaper: {args.baseline!r} - {baseline.n_observed} responses, "
+                f"{baseline.saturation:.0%} saturated, {age:.1f} days old.",
+                file=sys.stderr,
+            )
+
+        source = list(iter_batch(args.file) if args.file else iter_stdin())
+        # Score against the stored baseline, holding it still. `score_only`, not
+        # `score_against_baseline`: these records are not in the baseline, so discounting a
+        # contribution they never made would inflate every one of them.
+        scored = [ranker.score_only(r) for r in source]
+        for item in scored:
+            health.observe(item.result, partition=item.partition)
+        scored.sort(key=lambda s: (not s.settled, -s.novelty, s.position))
+
+        new = [s for s in scored if s.novelty >= args.threshold]
+        if args.jsonl:
+            write_jsonl(new[: args.top] if args.top else new)
+        else:
+            term = Terminal(threshold=args.threshold, partitioned=partitioned)
+            term.header(args.channel_set, "random", budget=None)
+            for item in new[: args.top] if args.top else new:
+                term.result(item, force=True)
+            print(
+                f"flypaper: {len(new)} of {len(scored)} responses are new against a baseline "
+                f"{age:.1f} days old (novelty >= {args.threshold:.2f}).",
+                file=sys.stderr,
+            )
+            if not new:
+                print(
+                    "flypaper: nothing new. That is the useful answer most weeks - it means "
+                    "the target looks like it did last time.",
+                    file=sys.stderr,
+                )
+
+        if args.update:
+            store.save(args.baseline, ranker)
+            print(f"flypaper: baseline {args.baseline!r} updated.", file=sys.stderr)
+        else:
+            print(
+                "flypaper: baseline left untouched. Pass --update to fold this scan in once "
+                "you have looked at what it found.",
+                file=sys.stderr,
+            )
+
+    _report_health(health)
+    return 0
+
+
 def cmd_baselines(args: argparse.Namespace) -> int:
     """List or inspect saved baselines."""
     from flypaper.store.db import Store
@@ -536,6 +638,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="score against the baseline without writing this run into it",
     )
     ranker.set_defaults(func=cmd_rank)
+
+    watch = sub.add_parser(
+        "watch",
+        help="what is new on a target since the last scan",
+        description=(
+            "Scores a scan against a saved baseline without folding it in, so the question "
+            "is 'what is here now that was not here then'. `fly rank --baseline` learns as "
+            "it goes and will tell you a second scan of the same target is unsurprising; "
+            "this holds the baseline still instead."
+        ),
+    )
+    watch.add_argument("file", nargs="?", help="a results file; omit to read stdin")
+    watch.add_argument("--baseline", required=True, help="the saved baseline to compare against")
+    watch.add_argument("--db", default=str(default_db()))
+    watch.add_argument(
+        "--per",
+        choices=("none", "host", "dir"),
+        default="none",
+        help="must match how the baseline was established",
+    )
+    watch.add_argument(
+        "--threshold",
+        type=float,
+        default=0.5,
+        help="how novel against the stored baseline a response must be to count as new",
+    )
+    watch.add_argument("--decay-halflife", type=float, default=None, help="in seconds")
+    watch.add_argument("--channel-set", default=CHANNEL_SET_VERSION)
+    watch.add_argument("--top", type=int, default=None)
+    watch.add_argument("--jsonl", action="store_true")
+    watch.add_argument(
+        "--update",
+        action="store_true",
+        help="fold this scan into the baseline after reporting, so next time compares to now",
+    )
+    watch.set_defaults(func=cmd_watch)
 
     baselines = sub.add_parser("baselines", help="list or inspect saved baselines")
     baselines.add_argument("name", nargs="?", help="describe just this one")
