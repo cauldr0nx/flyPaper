@@ -14,7 +14,7 @@ Numbers are computed by `bench/report_encoder.py`; the interpretation is written
 | `bench-calib` | ffuf issue #387: the hit's word count collides with the autocalibrated filter | 1998 | bench/target/server.py (ours) | 400/s | no |
 | `bench-stable` | control: byte-identical 404s, nothing jitters | 1998 | bench/target/server.py (ours) | 400/s | no |
 | `bench-collide` | ffuf issue #387, faithfully: noise answers 200 and every response shares the hits' word count, so autocalibration has only size/words/lines to work with | 1998 | bench/target/server.py (ours) | 400/s | no |
-| `mcware-live` | live surface: constant-size rendered 404, Vercel edge | 1998 | www.mcware.org | 10/s | yes |
+| `operator-live` | live surface: constant-size rendered 404 behind an edge CDN | 1998 | an operator-authorised host | 10/s | yes |
 | `bench-mixed` | four noise populations at once - an HTML 404, a login redirect, a JSON 403 and a 200 'no results' page - with hits hiding inside them | 1998 | bench/target/server.py (ours) | 400/s | no |
 
 ffufme supplies the wildcard host and an ordinary surface. It has no token-rotating

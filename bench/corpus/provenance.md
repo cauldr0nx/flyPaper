@@ -11,7 +11,7 @@ the record of what exists locally.
 |---|---|---|
 | ffufme container | Built locally from public source, run by the operator | `127.0.0.1:8099` |
 | `bench/target/server.py` | Ours, MIT, in this repository | `127.0.0.1:8110` |
-| `www.mcware.org` | Operator authorized this target on 2026-09-11 | public internet |
+| an operator-authorised host | Operator authorized this target on 2026-09-11. The hostname is deliberately not recorded in a public repository; it is supplied at capture time through `FLYPAPER_LIVE_TARGET`. | public internet |
 
 ffufme image `ffufme:8814611`, id `94d864f9f5da`, built 2026-09-11 from
 <https://github.com/BuildHackSecure/ffufme> commit
@@ -20,7 +20,7 @@ source never vendored. See `reports/licenses.md`.
 
 ## The live capture, and what went wrong with it
 
-`mcware-live` was captured on 2026-09-11 at the 10 requests/second live ceiling. It should
+`operator-live` was captured on 2026-09-11 at the 10 requests/second live ceiling. It should
 have been a small end-to-end confirmation. It was invoked with the full 2,000-word corpus
 wordlist instead, so it ran for roughly 200 seconds and sent about 2,000 requests, on top of
 an earlier 300-word run.
@@ -53,7 +53,7 @@ No further traffic has been sent to that host.
 | `bench-calib` | ours | 1,998 | 400/s | word-count collision, 404 noise | No |
 | `bench-collide` | ours | 1,998 | 400/s | word-count collision, 200 noise | No |
 | `bench-stable` | ours | 1,998 | 400/s | control: byte-identical 404s | No |
-| `mcware-live` | mcware.org | 1,998 | 10/s | blocked scan; see above | No |
+| `operator-live` | an operator-authorised host | 1,998 | 10/s | blocked scan; see above | No |
 
 A nine-record slice of an early ffufme capture lives in `tests/fixtures/` as parser
 fixtures. It is metadata only and is the single committed piece of any capture.

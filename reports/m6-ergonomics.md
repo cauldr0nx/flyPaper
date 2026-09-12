@@ -71,8 +71,9 @@ That is the property a hash set cannot have, and it now actually happens.
 
 ## 3. The live target, and what it cost
 
-The gate calls for one authorized live target. `www.mcware.org`, authorized by the operator
-on 2026-09-11, was used. The pipe ran end to end at the 10 requests/second live ceiling and
+The gate calls for one authorized live target. A host the operator authorized on
+2026-09-11 was used; the hostname is not recorded here, since a public repository
+naming a scanned host serves nobody. The pipe ran end to end at the 10 requests/second live ceiling and
 reported nothing novel, which was the correct answer: every unknown path returned a
 constant-size rendered 404.
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import urllib.request
@@ -39,6 +40,10 @@ LIVE_RATE_CEILING = 10
 # returned 403 to everything including its own front page. Volume is a separate axis from
 # rate and needs its own ceiling.
 LIVE_MAX_REQUESTS = 250
+
+#: The operator's own authorised live host, if they have one. Never a default: see the
+#: `operator-live` surface below.
+LIVE_TARGET = os.environ.get("FLYPAPER_LIVE_TARGET", "").rstrip("/")
 
 FFUFME = "http://127.0.0.1:8099"
 BENCH = "http://127.0.0.1:8110"
@@ -136,12 +141,16 @@ SURFACES: dict[str, dict] = {
         "target": "bench/target/server.py (ours)",
         "authorization": "our own code, loopback only",
     },
-    "mcware-live": {
-        "url": "https://www.mcware.org/FUZZ",
+    # The one live surface, and it has no default target on purpose. A public repository
+    # must not ship a hardcoded third-party hostname that anyone cloning it would then
+    # scan by running `--all-local`'s neighbour command. Set FLYPAPER_LIVE_TARGET to a host
+    # you are authorised against; without it this surface is skipped.
+    "operator-live": {
+        "url": f"{LIVE_TARGET}/FUZZ" if LIVE_TARGET else "",
         "hits": [],
-        "scenario": "live surface: constant-size rendered 404, Vercel edge",
-        "target": "www.mcware.org",
-        "authorization": "operator authorized this target on 2026-09-11",
+        "scenario": "live surface: a real host, captured under the live rate and volume caps",
+        "target": LIVE_TARGET or "(unset: export FLYPAPER_LIVE_TARGET)",
+        "authorization": "operator asserts authorisation by setting FLYPAPER_LIVE_TARGET",
         "live": True,
     },
 }
@@ -196,6 +205,14 @@ def preflight(name: str) -> None:
 def capture(name: str, rate: int, threads: int) -> dict:
     preflight(name)
     surface = SURFACES[name]
+    if not surface["url"]:
+        raise SystemExit(
+            f"[{name}] has no target. This surface is deliberately unset: point it at a host "
+            f"you are authorised against with\n"
+            f"    export FLYPAPER_LIVE_TARGET=https://host.you.own\n"
+            f"It is captured at {LIVE_RATE_CEILING} requests/second and at most "
+            f"{LIVE_MAX_REQUESTS} requests, both fixed in code rather than by flag."
+        )
     # A surface may bring its own haystack; bench-sprawl does, so that adding it could not
     # rewrite the list every already-published number was measured in.
     wordlist = CORPUS / surface["wordlist"] if surface.get("wordlist") else WORDLIST
