@@ -37,11 +37,13 @@ CORE = {
 DESCRIPTIONS = {
     "body-annotations-male-cns-v1.0-minconf-0.5.feather": (
         "Curated neuron annotations (classes, types, sides), excluding neurotransmitters. "
-        "Source of the LC4 / LPLC2 / DNp01 cell-type identities."
+        "How the olfactory PNs, Kenyon cells and MBON-alpha'3 are resolved, by annotation "
+        "rather than by hardcoded body ID."
     ),
     "body-neurotransmitters-male-cns-v1.0.feather": (
         "Aggregate neurotransmitter predictions per neuron. ML predictions from EM image "
-        "features, NOT measurements - see HONESTY.md section 4."
+        "features, NOT measurements in this specimen. Unused by flypaper: the projection "
+        "reads who connects to whom, not transmitter sign."
     ),
     "body-stats-male-cns-v1.0-minconf-0.5.feather": (
         "Summary synapse-count statistics for all segments with at least one synapse."

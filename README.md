@@ -3,149 +3,39 @@
 A novelty-ranking filter for web fuzzing output.
 
 `fly` reads ffuf results and ranks them by how *structurally unusual* they are, replacing
-hand-tuned `-fs` / `-fc` / `-fw` / `-fl` filters with a similarity-graded novelty score.
-The ranking is computed by the fruit fly's olfactory circuit — a published
-locality-sensitive hash and Bloom filter — wired from the measured MaleCNS connectome
-rather than the random projection the original papers assumed.
+hand-tuned `-fs` / `-fc` / `-fw` / `-fl` filters with a similarity-graded novelty score. The
+ranking is computed by the fruit fly's olfactory circuit — a published locality-sensitive
+hash and Bloom filter — optionally wired from the measured MaleCNS connectome.
 
 **It ranks; it does not detect.** A novel response is a statistical outlier, not a
 vulnerability. Output says *novel*, and nothing else.
 
-```
-ffuf -mc all -json -u https://target/FUZZ -w list.txt | fly ingest
+```bash
+ffuf -mc all -json -u https://target/FUZZ -w list.txt | fly rank
 ```
 
 `-mc all` is deliberate: you want every response, including the 404 sea, because the noise
-*is* the baseline.
-
-## Status
-
-The pipeline is built end to end. Each milestone is a binary gate; a failed gate is written
-up in `reports/` and stopped on, never loosened by moving the threshold.
-
-| Milestone | What it is | Outcome |
-|---|---|---|
-| M0 | Scaffold, licenses recorded | passed |
-| M1 | Ingest spike | passed — [reports/m1-ingest.md](reports/m1-ingest.md) |
-| M2 | Encoder and replay corpus | passed — [reports/m2-encoder.md](reports/m2-encoder.md) |
-| M3 | Connectome FlyHash vs. random projection | **split** — [reports/m3-flyhash-benchmark.md](reports/m3-flyhash-benchmark.md) |
-| M3b | The same comparison, on this workload instead of MNIST | **split** — [reports/connectome-on-workload.md](reports/connectome-on-workload.md), [reports/claw-degrees.md](reports/claw-degrees.md) |
-| M4 | Ranking vs. ffuf's own filters | passed — [reports/m4-vs-manual-filters.md](reports/m4-vs-manual-filters.md) |
-| M5 | Stage two, scope-gated and rate-limited | passed — [reports/m5-stage-two.md](reports/m5-stage-two.md) |
-| M6 | Ergonomics | passed — [reports/m6-ergonomics.md](reports/m6-ergonomics.md) |
-| M7 | Adaptive foraging, delayed reward | not started |
-
-Three benchmarks sit outside the milestone sequence:
-[reports/partitioned.md](reports/partitioned.md) measures per-host baselines,
-[reports/decay.md](reports/decay.md) measures whether temporal decay is worth having, and
-[reports/live-targets.md](reports/live-targets.md) runs the whole thing against real hosts.
-
-### What the measurements actually said
-
-**The connectome does not beat random projection.** Wired from the measured MaleCNS
-connectivity, FlyHash lands inside the spread of random draws for novelty detection —
-beating 9 to 11 of 15 seeds, which is a coin flip — and is clearly worse at nearest-neighbour
-retrieval. That is a real result about the published model and a reassuring one: Dasgupta,
-Stevens & Navlakha assumed a random projection because that is what the biology looked like
-statistically, and the measured wiring says the simplification costs nothing on this task.
-flypaper ships on random projection because the two are indistinguishable here and random
-needs no 508 MB download.
-
-**But that was measured on MNIST, and this is not MNIST.** M3 used the datasets the FlyHash
-papers used, which is right for comparability and wrong for the workload. Re-run on
-flypaper's own corpus
-([reports/connectome-on-workload.md](reports/connectome-on-workload.md)), the connectome
-does beat a plain random projection — and still does not beat its own degree-preserving
-null, or a version of itself with the input channels shuffled. Two controls agreeing means
-the advantage is not in *which* glomerulus reaches which Kenyon cell. It is in how unevenly
-the claws are spread: the published model gives every cell the same fan-in, the measured
-circuit gives them 1 to 29.
-
-That part is 13 numbers rather than 508 MB, so it was implemented as
-`--projection degree-sampled` and measured. On `bench-mixed` it cut the median rank of the
-hardest hit from 29 to 9, p=0.03, and that was written up as the one thing the connectome
-contributed. **It did not replicate.** A second heterogeneous surface, `bench-sprawl` —
-seven noise populations against four, each jittering internally, built and captured before
-the projection was ever run against it — shows no effect (p=0.52), and the original result
-does not survive pairing the seeds on its own surface (p=0.03 → p=0.17). One nominally
-significant result out of two surfaces, uncorrected, is what noise looks like.
-
-So nothing from the connectome currently improves this tool's ranking, and
-[reports/claw-degrees.md](reports/claw-degrees.md) retracts the claim rather than burying
-it. The option stays in the code as the control that makes the connectome comparison
-interpretable; it is not recommended and not the default. The falsification criterion was
-written into the report before the surface existed, which is the only reason it could fire. Running that comparison at all first required admitting the connectome had never
-been usable with the real encoder — it needs exactly 55 input channels and the default
-encoder produced 39, so every earlier measurement of it was made on reduced image data.
-
-**ffuf's `-ac` is a strong incumbent.** The ffuf issue #387 scenario did not reproduce
-against ffuf 2.1.0-dev on either surface built to trigger it. At equal review budget, novelty
-ranking matched `-ac` and a competent hand-tuned filter on recall across six surfaces. What
-it did better was ordering: a genuine result at rank 1 on all six, where the filters needed
-up to 470 results reviewed first. And it was the only one of the three not to fail badly on
-at least one surface, with no per-target configuration.
-
-**The encoder is where the skill lives, and the obvious channels were the wrong ones.** An
-input-word character profile — one of the candidate encodings — turned out to supply 98% of
-the within-cluster variance and destroy exactly the collapse the tool depends on, because the
-fuzzed word differs on every request by construction.
-
-**One baseline per host is the thing a filter cannot have.** ffuf derives one filter and
-applies it to the whole run; from its own tracker, on scanning several targets at once,
-*"would be impossible to put correct flag for each host"*. A Fly Bloom Filter is 2,045
-floats, so flypaper keeps one per host — and one per directory if the scan recursed, which
-is what feroxbuster gets from per-directory wildcard detection and ffuf has no equivalent
-for. On a 9,990-response sweep across five hosts, a shared baseline finds 20 of 27 hits and
-buries the worst at rank 6,762; one baseline per host finds all 27 by rank 33
-([reports/partitioned.md](reports/partitioned.md)). On a constructed worst case — each
-host's real page shaped exactly like the other host's noise — the shared baseline scores
-both hits at 0.0000, which is not a low rank but no signal at all.
-
-**The same argument applies inside one host, and it is worth more there than anything else
-measured in this project.** A host that serves seven different response populations — an
-HTML 404, a login redirect, a JSON refusal, a soft-404, a stack trace — has one standard
-deviation spanning all seven. A page 25% away from its *own* population's size sits well
-under one sigma of the whole and reads as unremarkable. That is not something a better
-projection can fix: the information is in the stream and a single baseline averages it
-away. `--per shape` gives each kind of page its own baseline, splitting on status and size
-decade. On `bench-sprawl` it moves the hardest labelled response from a median rank of 823
-to 10, and from a spread of 46–1,590 across seeds to 7–32; on `bench-mixed`, from 23 to a
-flat 6 on every seed. It is not free: on a single-population surface whose size jitters it
-is slightly worse (median 9 against 8), because splitting a population that did not need
-splitting makes each piece thinner. So it is an option, not the default.
-
-Partitions of one are the hazard, and this repository has already shipped that bug once —
-`--per dir` scored 1.000 on partitions holding a single response that had nothing to be
-unlike. A shape too thin to have an opinion does not score; its responses fall back to the
-host baseline.
-
-**It behaves the same on real targets.** Seven hosts across three public bug bounty
-programs, 1,022 requests ([reports/live-targets.md](reports/live-targets.md)). The encoder
-collapsed 404 walls of 21 b, 13 kB and 33 kB with no configuration and put the structurally
-distinct responses on top. On an API whose 404 body quotes the path back — so no two
-responses are the same size — the size filter an operator would reach for first leaves 122
-of 146 responses to read, while `-ac` and flypaper both leave the same 4. `-ac` was not
-beaten on any target, synthetic or real; what flypaper removes is having to pick the right
-field in advance.
+*is* the baseline. Filtering upstream destroys the thing the filter needs, and it fails
+quietly — the ranking still looks fine. `fly rank` checks the stream and says so if it
+looks pre-filtered, too short to have learned anything, or surfacing so much that the
+baseline cannot be describing it.
 
 ## Install
 
 ```bash
 uv tool install git+https://github.com/cauldr0nx/flyPaper     # or: pipx install
-fly --version
 ```
 
-Pure Python, no build step, and nothing it needs at runtime beyond numpy and scipy. The
-MaleCNS tables are only needed from M3 onward and the tool runs without them.
-
-To work on it:
+Pure Python; numpy and scipy at runtime, no build step. The MaleCNS tables are optional and
+only needed for the connectome projection and the dashboard's geometry:
 
 ```bash
-uv venv && uv pip install -e ".[dev]"
-make ci          # ruff + pytest, offline, no dataset required
+python data/fetch.py --tier core      # ~522 MB, verified against pinned SHA256
+export FLYPAPER_RAW_DIR=/path/to/existing/raw && python data/fetch.py --verify-only
 ```
 
-There is deliberately no hosted CI workflow yet; `make ci` is the gate.
+To work on it: `uv venv && uv pip install -e ".[dev]"` then `make ci` (ruff + pytest,
+offline, no dataset). There is deliberately no hosted CI; `make ci` is the gate.
 
 ## Usage
 
@@ -153,111 +43,97 @@ There is deliberately no hosted CI workflow yet; `make ci` is the gate.
 # live, straight off the pipe
 ffuf -mc all -json -u http://host/FUZZ -w list.txt | fly rank
 
-# a sweep across many hosts, one baseline each - the case ffuf cannot handle
+# a sweep across many hosts, one baseline each — the case ffuf cannot handle
 ffuf -mc all -json -u https://HOST/FUZZ -w list.txt:FUZZ -w hosts.txt:HOST | fly rank --per host
 
-# a recursive scan, one baseline per directory
-ffuf -mc all -json -recursion -u http://host/FUZZ -w list.txt | fly rank --per dir
-
-# one host serving several kinds of page - a baseline per kind, not one for all of them
+# one host serving several kinds of page — a baseline per kind, not one for all of them
 ffuf -mc all -json -u http://host/FUZZ -w list.txt | fly rank --per shape
 
-# a completed results file, scored in two passes
-fly rank results.json --top 20
+# a completed run, scored in two passes, showing the most novel half-percent
+fly rank results.json --percentile 99.5
 
-# against a saved baseline, so a second scan of the same target is not novel again
-fly rank results.json --baseline acme --decay-halflife 604800
-
-# a weekly sweep: one saved baseline per host, each ageing on its own
-fly rank results.json --per host --baseline acme --decay-halflife 604800
+# monitoring: what is structurally new on this target since last time
+fly rank results.json --baseline acme --per host --decay-halflife 604800
+fly watch newscan.json --baseline acme --per host
 
 # stage two: re-fetch the most novel candidates, scope-gated and slow
-fly taste results.json --scope scope.txt --top 10 --rate 1
-
-# parse only, no scoring
-fly ingest --file results.json
-
-# turn a program's published scope table into a scope file, without widening it
-fly scope program-scope.csv --out scope.txt
-
-# monitoring: what is new on this target since last time
-fly watch results.json --baseline acme --per host
-
-fly baselines            # what is stored, and how stale
+fly taste results.json --scope scope.txt --top 10
 ```
 
-`fly rank --baseline` learns as it goes, so a second scan of the same target reports that
-nothing is surprising — true, and useless. `fly watch` holds the baseline still and answers
-*what is here now that was not here then*, leaving it untouched unless you pass `--update`.
-It reports **structurally** new, not newly-seen: a new URL serving a page much like one the
-target already had will not be flagged, which is right for monitoring at scale and wrong if
-what you wanted was a URL diff.
-
-`-mc all` is deliberate: you want every response, including the 404 sea, because the noise
-*is* the baseline. Filtering upstream destroys the thing the filter needs — and it fails
-quietly, because the ranking still looks fine. `fly rank` checks the stream and tells you if
-it looks pre-filtered, too short to have learned anything, or if so much of it is surfacing
-that the baseline cannot be describing it.
-
-```bash
-# follow a scan that is still running
-ffuf -mc all -of json -o out.json -u http://host/FUZZ -w list.txt &
-fly rank out.json --follow
-```
-
-There is no novelty threshold to choose. A fixed one cannot work — baseline noise sits at
-0.000 on every surface measured, but the weakest genuine hit ranged from 0.001 to 0.318
-across them — so the cutoff is a review budget instead: `--percentile 99.5` shows the most
+There is no novelty threshold to choose, and a fixed one cannot work: baseline noise sits at
+0.000 on every surface measured, but the weakest genuine result ranged from 0.001 to 0.318
+across them. The cutoff is a review budget instead — `--percentile 99.5` shows the most
 novel half-percent *for this target*, calibrated from the run itself.
 
-On a 1,998-response scan of a target whose every response carries a rotating CSRF token,
-that prints eight lines, and all eight are the planted hits.
+`fly watch` reports **structurally** new, not newly-seen: a new URL serving a page much like
+one the target already had is not flagged. That is right for monitoring at scale and wrong
+if what you wanted was a URL diff.
 
-### The dashboard
+## What the measurements said
 
-A page showing what the circuit is doing, on one screen: the run's log on a monitor beside
-the mushroom body's **measured** synapses, and the novelty traces with the cutoff the run
-actually used. The synapses move with the scan in both directions — a synapse flashes when
-the current response's tag selects the Kenyon cell that owns it, and settles back to
-whatever weight that response left it holding, so the lobe goes dark exactly where the run
-has learned a baseline.
+Every claim below is generated by a benchmark in `bench/` into a report in `reports/`.
+Milestones were binary gates; a failed gate was written up and stopped on, never loosened.
+
+**One baseline per population is the whole result.** ffuf derives one filter and applies it
+to the whole run — from its own tracker, on scanning several targets at once, *"would be
+impossible to put correct flag for each host"*. A Fly Bloom Filter is 2,045 floats, so
+flypaper simply keeps one per host, per directory, or per kind of page. Across five hosts
+and 9,990 responses a shared baseline finds 20 of 27 planted results and buries the worst at
+rank 6,762; one baseline per host finds all 27 by rank 33. Inside a *single* host serving
+seven response populations, `--per shape` moves the hardest planted result from a median
+rank of 823 to 10 ([reports/partitioned.md](reports/partitioned.md)).
+
+**`-ac` is a strong incumbent and was not beaten.** At equal review budget, novelty ranking
+matched ffuf's autocalibration and a competent hand-tuned filter on recall across six
+surfaces. What it did better was ordering — a genuine result at rank 1 on all six, where the
+filters needed up to 470 results reviewed first — and it was the only one of the three not
+to fail badly on at least one surface, with no per-target configuration
+([reports/m4-vs-manual-filters.md](reports/m4-vs-manual-filters.md)).
+
+**The connectome does not beat a random projection.** Measured on the FlyHash papers' own
+datasets it lands inside the spread of random draws, and on flypaper's workload it beats a
+plain random projection but not its own degree-preserving null, nor a version of itself with
+the input channels shuffled — so the advantage is not in which glomerulus reaches which
+Kenyon cell. The one thing that looked like a contribution, the measured spread of fan-in,
+was published and then **retracted**: it did not reproduce on a second heterogeneous surface
+built specifically to test it ([reports/connectome-on-workload.md](reports/connectome-on-workload.md),
+[reports/claw-degrees.md](reports/claw-degrees.md)). flypaper therefore ships on the random
+projection, which needs no 508 MB download.
+
+**The encoder is where the skill lives.** An input-word character profile — one of the
+candidate encodings — supplied 98% of the within-cluster variance and destroyed exactly the
+collapse the tool depends on, because the fuzzed word differs on every request by
+construction ([reports/m2-encoder.md](reports/m2-encoder.md)).
+
+**It behaves the same on real targets.** Seven hosts across three public bug bounty
+programs, 1,022 requests ([reports/live-targets.md](reports/live-targets.md)).
+
+The rest of the record: [ingest](reports/m1-ingest.md) ·
+[connectome vs. random on MNIST](reports/m3-flyhash-benchmark.md) ·
+[stage two](reports/m5-stage-two.md) · [ergonomics](reports/m6-ergonomics.md) ·
+[temporal decay](reports/decay.md).
+
+## The dashboard
+
+One screen: the run's log on a monitor beside the mushroom body's **measured** synapses, and
+the novelty traces with the cutoff the run actually used. A synapse flashes when the current
+response's tag selects the Kenyon cell that owns it and settles back to the weight that
+response left it holding, so the lobe goes dark exactly where the run has learned a baseline.
 
 ```bash
 python -m flypaper.web.export                     # circuit geometry (needs the MaleCNS tables)
 python -m flypaper.web.server --tailscale         # then open the printed address
 ```
 
-It records a run from `bench/corpus/` on first start, so a capture has to exist. Standard
-library only, with a vendored three.js, so it works with no internet connection.
+Standard library and a vendored three.js, so it works with no internet connection.
+`--tailscale` binds the tailnet interface; it is **never** `tailscale funnel`, nothing is
+published to the internet, and a test asserts that.
 
-`--tailscale` binds the tailnet interface, so the page is reachable from your other devices
-at `http://<machine>.<tailnet>.ts.net:8770/`. It is **never** `tailscale funnel`: nothing is
-published to the internet, and a test asserts that. For HTTPS on a name with no port number,
-`tailscale serve` needs rights it does not have by default — run `sudo tailscale set
---operator=$USER` once, then `--tailscale` will set it up.
-
-Two panels, side by side, deliberately separate because only one of them is data. The
-mushroom body is measured: every point is a location in MaleCNS EM space, and the α′3
-synapses it lights are the Bloom filter's own weights — recorded per response by
-`flypaper.web.replay`, not generated in the browser. The workstation is staging: the fly is a real anatomical
-model but nothing about its pose is computed, and it is not spatially registered to the
-connectome. The page says so on the page.
-
-### The connectome data
-
-The MaleCNS tables are needed from M3 onward, not before.
-
-```bash
-python data/fetch.py --tier core      # ~522 MB, verified against pinned SHA256
-```
-
-If you already have the tables from another checkout, point at them instead of downloading
-a second copy — `data/fetch.py --verify-only` then proves the bytes match:
-
-```bash
-export FLYPAPER_RAW_DIR=/path/to/malecns/raw
-python data/fetch.py --verify-only
-```
+Two panels, deliberately separate, because only one of them is data. The mushroom body is
+measured: every point is a location in MaleCNS EM space and the α′3 synapses are the Bloom
+filter's own weights, recorded per response rather than generated in the browser. The
+workstation is staging — a real anatomical model, but nothing about its pose is computed and
+it is not registered to the connectome. The page says so on the page.
 
 ## Known limitations
 

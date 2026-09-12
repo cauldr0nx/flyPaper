@@ -106,21 +106,38 @@ def cmd_rank(args: argparse.Namespace) -> int:
             return 0
         term = Terminal(
             threshold=args.threshold,
-            percentile=args.percentile,
+            percentile=_percentile(args),
             partitioned=args.per != "none",
         )
         # A completed file is already sorted, so a review budget is the useful default: a
         # percentile gate can legitimately pass nothing, and "0 of 1592" is a bad answer to
         # "show me this scan". It happens for real with --per, where every partition has to
         # calibrate its own gate and an early hit in a partition arrives before it has.
-        budget = args.top if args.top is not None else DEFAULT_TOP
+        #
+        # But only as a *default*. An explicit --percentile was previously accepted and then
+        # ignored here: the budget applied regardless and printed with force=True, so
+        # --percentile 99.5, --percentile 99.9 and no flag at all gave byte-identical output.
+        if args.top is not None:
+            budget = args.top
+        elif args.percentile is not None:
+            budget = 0  # asked for the gate; the cutoff below decides how many that is
+        else:
+            budget = DEFAULT_TOP
         term.header(args.channel_set, args.projection, budget=budget)
         if budget:
             for item in scored[:budget]:
                 term.result(item, force=True)
         else:
+            # Offline the whole distribution is known, so the cutoff is taken from it
+            # directly. The rolling estimator the live path uses cannot be reused here:
+            # `scored` arrives sorted most-novel-first, so a rolling gate sees the highest
+            # scores before it has any idea what typical looks like, concludes they are
+            # typical, and suppresses the entire run. That is why --percentile silently
+            # printed nothing on a completed file.
+            cutoff = percentile_cutoff([item.novelty for item in scored], _percentile(args))
             for item in scored:
-                term.result(item)
+                if item.novelty >= cutoff:
+                    term.result(item, force=True)
         term.footer(0.0)
         _report_health(health)
         return 0
@@ -129,7 +146,7 @@ def cmd_rank(args: argparse.Namespace) -> int:
     ranker = Ranker(**kwargs)
     term = None
     if not args.jsonl:
-        term = Terminal(threshold=args.threshold, percentile=args.percentile, warmup=args.warmup)
+        term = Terminal(threshold=args.threshold, percentile=_percentile(args), warmup=args.warmup)
         term.header(args.channel_set, args.projection)
     shown_before = 0
     for item in ranker.stream(source):
@@ -274,7 +291,7 @@ def _rank_with_baseline(args, source, kwargs) -> int:
         if not args.jsonl:
             term = Terminal(
                 threshold=args.threshold,
-                percentile=args.percentile,
+                percentile=_percentile(args),
                 warmup=args.warmup,
                 partitioned=partitioned,
             )
@@ -473,6 +490,31 @@ def cmd_scope(args: argparse.Namespace) -> int:
 #: chosen to fit on a screen.
 DEFAULT_TOP = 25
 
+#: `--percentile` has to distinguish "the operator asked for this cutoff" from "nobody said
+#: anything", because on a completed file the two mean opposite things: an explicit
+#: percentile is a request to use the gate, while the default is just a default and the
+#: useful behaviour is a review budget. Argparse cannot tell them apart if the default is
+#: the value itself, so the default is None and resolves to this.
+DEFAULT_PERCENTILE = 99.5
+
+
+def percentile_cutoff(novelties: list[float], percentile: float) -> float:
+    """The novelty a response has to reach to be in the top (100-P)% of this run.
+
+    Offline only. `RollingPercentile` is the live equivalent and estimates this from what
+    has gone past so far; here the run is complete, so there is nothing to estimate.
+    """
+    if not novelties:
+        return 0.0
+    import numpy as np
+
+    return float(np.percentile(np.asarray(novelties, dtype=float), percentile))
+
+
+def _percentile(args) -> float:
+    """The cutoff to display with. `None` means the operator did not choose one."""
+    return DEFAULT_PERCENTILE if args.percentile is None else args.percentile
+
 
 def _report_health(health) -> None:
     """Say whether the stream could have taught a baseline at all."""
@@ -575,7 +617,7 @@ def build_parser() -> argparse.ArgumentParser:
     ranker.add_argument(
         "--percentile",
         type=float,
-        default=99.5,
+        default=None,
         help=(
             "show results in the top (100-P)%% most novel for this target, calibrated from "
             "the run itself. A review budget rather than a novelty standard."
