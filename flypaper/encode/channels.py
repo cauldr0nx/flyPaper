@@ -245,6 +245,23 @@ def _content_type_class(ct: str) -> str:
 _CT_CLASSES = ("html", "json", "xml", "text", "script", "image", "binary", "none", "other")
 _STATUS_EXACT = (200, 204, 301, 302, 307, 401, 403, 404, 405, 500)
 
+#: Status codes that carry meaning in content discovery but are not in the core set. 401 and
+#: 403 already are: "a 403 on /admin confirms the path exists" is the whole reason not to
+#: filter them. These are the rest a real scan runs into.
+_STATUS_EXTRA = (206, 303, 304, 400, 409, 410, 429, 502, 503, 504)
+
+#: Coarse size buckets, alongside the continuous log channels. An empty body is a category
+#: rather than a small number - a 302 with zero bytes is not a short page - and a
+#: multi-megabyte response is a different kind of thing from a big one.
+_SIZE_BUCKETS = (
+    ("empty", 0, 1),
+    ("tiny", 1, 256),
+    ("small", 256, 4_096),
+    ("medium", 4_096, 65_536),
+    ("large", 65_536, 1_048_576),
+    ("huge", 1_048_576, float("inf")),
+)
+
 
 # --- v1-raw ------------------------------------------------------------------------------------
 
@@ -410,6 +427,33 @@ def _v3_channels() -> tuple[Channel, ...]:
     return tuple(c for c in _v2_channels() if not c.name.startswith(_WORD_DEPENDENT))
 
 
+def _v4_channels() -> tuple[Channel, ...]:
+    """v3 widened to exactly the number of receptor channels the fly has.
+
+    The measured circuit projects from 55 antennal lobe glomeruli, so a connectome-wired
+    FlyHash needs 55 inputs. v3 has 39, which meant **the connectome projection could not
+    be used with the default encoder at all** - the mismatch raised, and every measurement
+    of it was therefore made on PCA-reduced image data rather than on this workload.
+
+    The sixteen added channels are response-only, like the rest of v3: ten more status
+    codes a content-discovery scan actually meets, and six coarse size buckets. The
+    buckets are categorical on purpose, alongside the continuous log channels - an empty
+    body is a kind of response rather than a short one, and a 302 with zero bytes is not
+    a small page.
+    """
+    out = list(_v3_channels())
+    for code in _STATUS_EXTRA:
+        out.append(Channel(f"status.{code}", lambda r, c, k=code: 1.0 if r.status == k else 0.0))
+    for name, low, high in _SIZE_BUCKETS:
+        out.append(
+            Channel(
+                f"size.{name}",
+                lambda r, c, lo=low, hi=high: 1.0 if lo <= r.length < hi else 0.0,
+            )
+        )
+    return tuple(out)
+
+
 CHANNEL_SETS: dict[str, ChannelSet] = {
     "v1-raw": ChannelSet(
         version="v1-raw",
@@ -423,6 +467,14 @@ CHANNEL_SETS: dict[str, ChannelSet] = {
             "redirect similarity, z-scored response time, input-word character profile"
         ),
         channels=_v2_channels(),
+    ),
+    "v4-glomerular": ChannelSet(
+        version="v4-glomerular",
+        description=(
+            "v3-response widened to 55 channels - one per measured antennal lobe glomerulus "
+            "- so the connectome-wired projection can be used at all"
+        ),
+        channels=_v4_channels(),
     ),
     "v3-response": ChannelSet(
         version="v3-response",

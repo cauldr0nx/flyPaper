@@ -177,7 +177,7 @@ def test_partition_travels_into_the_output():
 
 def test_connectome_projection_is_refused_when_partitioning():
     """Partitions share one projection; the connectome path builds its own."""
-    with pytest.raises(ValueError, match="random projection"):
+    with pytest.raises(ValueError, match="cannot use 'connectome'"):
         PartitionedRanker(how="host", projection="connectome")
 
 

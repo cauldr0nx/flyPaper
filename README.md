@@ -29,6 +29,7 @@ up in `reports/` and stopped on, never loosened by moving the threshold.
 | M1 | Ingest spike | passed — [reports/m1-ingest.md](reports/m1-ingest.md) |
 | M2 | Encoder and replay corpus | passed — [reports/m2-encoder.md](reports/m2-encoder.md) |
 | M3 | Connectome FlyHash vs. random projection | **split** — [reports/m3-flyhash-benchmark.md](reports/m3-flyhash-benchmark.md) |
+| M3b | The same comparison, on this workload instead of MNIST | **split** — [reports/connectome-on-workload.md](reports/connectome-on-workload.md), [reports/claw-degrees.md](reports/claw-degrees.md) |
 | M4 | Ranking vs. ffuf's own filters | passed — [reports/m4-vs-manual-filters.md](reports/m4-vs-manual-filters.md) |
 | M5 | Stage two, scope-gated and rate-limited | passed — [reports/m5-stage-two.md](reports/m5-stage-two.md) |
 | M6 | Ergonomics | passed — [reports/m6-ergonomics.md](reports/m6-ergonomics.md) |
@@ -49,6 +50,26 @@ Stevens & Navlakha assumed a random projection because that is what the biology 
 statistically, and the measured wiring says the simplification costs nothing on this task.
 flypaper ships on random projection because the two are indistinguishable here and random
 needs no 508 MB download.
+
+**But that was measured on MNIST, and this is not MNIST.** M3 used the datasets the FlyHash
+papers used, which is right for comparability and wrong for the workload. Re-run on
+flypaper's own corpus
+([reports/connectome-on-workload.md](reports/connectome-on-workload.md)), the connectome
+does beat a plain random projection — and still does not beat its own degree-preserving
+null, or a version of itself with the input channels shuffled. Two controls agreeing means
+the advantage is not in *which* glomerulus reaches which Kenyon cell. It is in how unevenly
+the claws are spread: the published model gives every cell the same fan-in, the measured
+circuit gives them 1 to 29.
+
+That part is 13 numbers rather than 508 MB, so it ships as `--projection degree-sampled`
+([reports/claw-degrees.md](reports/claw-degrees.md)). On a surface whose noise is several
+response populations rather than one, it cuts the median rank of the hardest hit from 29 to
+9. On another it gives up a single position of median and removes the tail instead — the
+worst seed goes from rank 482 to 18, which is the difference between a hit nobody scrolls to
+and one on the first screen. On surfaces where every projection already puts every hit at
+the top, it does nothing. It is not a general improvement and it is not the default. Running that comparison at all first required admitting the connectome had never
+been usable with the real encoder — it needs exactly 55 input channels and the default
+encoder produced 39, so every earlier measurement of it was made on reduced image data.
 
 **ffuf's `-ac` is a strong incumbent.** The ffuf issue #387 scenario did not reproduce
 against ffuf 2.1.0-dev on either surface built to trigger it. At equal review budget, novelty
@@ -250,7 +271,7 @@ the MaleCNS data carries its own terms regardless of our code license. The full 
 | [ffufPostprocessing](https://github.com/dsecuredcom/ffufPostprocessing) (dsecuredcom) | closest prior art — strips dynamic content before filtering | No license file published | Cited as prior art. No code reuse. |
 | [ffufw](https://github.com/puzzlepeaches/ffufw) (puzzlepeaches) | wrapper; source of feature ideas | No license file published | Cited as prior art. No code reuse. |
 | [FFUF-Workflow-Tool](https://github.com/nullenc0de/FFUF-Workflow-Tool) (nullenc0de) | evidence for the pipe-not-fork architecture | No license file published | Cited as prior art. No code reuse. |
-| MaleCNS v1.0 connectome data | the measured PN→KC wiring | CC BY 4.0 | Governs the data regardless of this repository's MIT license. Verbatim terms and attribution in `data/manifest.json`. Never committed. |
+| MaleCNS v1.0 connectome data | the measured PN→KC wiring | CC BY 4.0 | Governs the data regardless of this repository's MIT license. Verbatim terms and attribution in `data/manifest.json`. The tables themselves are never committed. One **derived** summary is: `flypaper/brain/claw-degrees.json`, a 13-number histogram of how many glomeruli each Kenyon cell listens to, which CC BY permits with attribution and which is what `--projection degree-sampled` needs instead of the 508 MB download. |
 | [fly_connectome_data_tutorial](https://github.com/sjcabs/fly_connectome_data_tutorial) (sjcabs) | orientation material | MIT | Read for method. |
 | [philshiu/Drosophila_brain_model](https://github.com/philshiu/Drosophila_brain_model) | whole-brain LIF model | MIT | Verified 2026-09-11 — the brief recorded this as unverified. Read for method. |
 | [eonsystemspbc/fly-brain](https://github.com/eonsystemspbc/fly-brain) | adjacent implementation | GPL-2.0-or-later | **Excluded.** Never vendored, never copied into this MIT repository. |

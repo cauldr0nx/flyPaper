@@ -71,6 +71,14 @@ still there.
 - Bulk data is never committed. `data/fetch.py` fetches it over plain HTTPS from the public
   bucket, verifies every byte against a pinned SHA256 and the upstream MD5, and hard-fails
   without leaving an unverified file in place.
+- **One derived summary is committed**, and this is the exception to the line above:
+  `flypaper/brain/claw-degrees.json`, about a kilobyte, a histogram of how many glomeruli each
+  Kenyon cell listens to. It is a summary statistic computed from the CC BY tables, not a
+  copy of them - 13 integers, from which the wiring cannot be reconstructed. CC BY permits
+  adapted and derived material with attribution, which the file carries inline along with
+  the source and specimen. It exists because measurement showed the fan-in *distribution*
+  is the part of the connectome that helps this workload (`reports/claw-degrees.md`), so
+  shipping it lets `--projection degree-sampled` work without the 508 MB download.
 
 ## 6. Reference material
 
@@ -127,3 +135,8 @@ none should be added without revisiting this document.
 
 No GPL code. No vendored third-party source of any license. No committed bulk data, no
 committed corpora, and no response bodies anywhere in the tree.
+
+The single piece of committed third-party-derived *data* is
+`flypaper/brain/claw-degrees.json` - a 13-number histogram summarising the CC BY MaleCNS
+tables, attributed inline, described in section 5. Calling it "no committed data" would be
+wrong, so it is named here instead.

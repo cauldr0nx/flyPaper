@@ -23,20 +23,32 @@ projections are implemented so the difference can be attributed:
 `connectome`
     The measured MaleCNS projection, synapse counts and all.
 
+`degree-sampled`
+    Random targets, but fan-in drawn from the measured claw-count histogram rather than
+    fixed. This one exists because of what the comparison found: the connectome beats
+    `random` and does *not* beat `random-matched`, so the advantage was never in which
+    glomerulus reaches which cell - it was in how unevenly the claws are spread. That is
+    13 numbers, so it ships without the connectome.
+
 A comparison against only the uniform baseline would not be able to tell structure from
 degree, so all three are reported.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
 
 __all__ = [
     "FlyHash",
+    "claw_degrees",
     "connectome_projection",
+    "degree_sampled_projection",
     "random_matched_projection",
     "random_projection",
 ]
@@ -83,6 +95,52 @@ def random_matched_projection(
         return sp.csr_matrix(measured.shape, dtype=np.float32)
     rows, cols = np.concatenate(rows), np.concatenate(cols)
     return sp.csr_matrix((np.ones(len(rows), dtype=np.float32), (rows, cols)), shape=measured.shape)
+
+
+#: The measured claw-count histogram, small enough to ship. See `claw_degrees`.
+_CLAW_DEGREES_FILE = Path(__file__).with_name("claw-degrees.json")
+
+
+@lru_cache(maxsize=1)
+def claw_degrees() -> np.ndarray:
+    """How many glomeruli each Kenyon cell listens to, measured, as a flat sample.
+
+    Stored as a histogram of 13 numbers rather than as the connectome it came from, because
+    that is all `degree_sampled_projection` needs: about a kilobyte in the repository
+    against a 508 MB download, and it transfers to any channel count.
+    """
+    blob = json.loads(_CLAW_DEGREES_FILE.read_text())
+    return np.repeat(
+        np.array([int(k) for k in blob["histogram"]], dtype=np.int64),
+        np.array(list(blob["histogram"].values()), dtype=np.int64),
+    )
+
+
+def degree_sampled_projection(
+    n_channels: int, n_kc: int, *, rng: np.random.Generator | None = None
+) -> sp.csr_matrix:
+    """Random targets, but the fly's spread of fan-in rather than one uniform number.
+
+    The published FlyHash gives every Kenyon cell the same number of claws. The measured
+    circuit does not: the count runs from 1 to 29 around a mean of 5.4, and that spread -
+    not the mean - is what carries the advantage. Measured on `bench-mixed`, whose noise is
+    several different response populations rather than one, this halves both the median
+    worst-hit rank (29 to 10) and its tail (p90 537 to 275), p=0.02 over 64 seeds. On
+    surfaces whose noise is effectively one population it is neutral.
+
+    A uniform fan-in of 5, which matches the measured *mean*, is markedly worse than the
+    uniform 6 it replaces - so this is not simply a smaller number of claws.
+
+    See reports/connectome-on-workload.md. This is the one thing in the tool that the
+    connectome contributed and a random projection would not have suggested.
+    """
+    rng = rng or np.random.default_rng(0)
+    degrees = np.minimum(rng.choice(claw_degrees(), n_kc, replace=True), n_channels)
+    rows = np.concatenate([rng.choice(n_channels, d, replace=False) for d in degrees])
+    cols = np.repeat(np.arange(n_kc), degrees)
+    return sp.csr_matrix(
+        (np.ones(len(rows), dtype=np.float32), (rows, cols)), shape=(n_channels, n_kc)
+    )
 
 
 def connectome_projection(measured: sp.csr_matrix, *, binary: bool = False) -> sp.csr_matrix:

@@ -1,0 +1,27 @@
+{
+ "_comment": "How many glomeruli each Kenyon cell listens to, measured from MaleCNS v1.0 and reduced to a histogram. Derived from a CC-BY dataset; see reports/licenses.md for the attribution this carries. Cells with zero claws are excluded - in the measured circuit they are cells that take no input from these glomeruli, not cells wired to nothing, and resampling them would silently shrink the tag space.",
+ "license": "CC BY 4.0",
+ "license_url": "https://creativecommons.org/licenses/by/4.0/",
+ "attribution": "FlyEM Project Team (HHMI Janelia); University of Cambridge, Dept. of Zoology; MRC Laboratory of Molecular Biology; Google Research",
+ "citation": "Berg et al., Cell, 2026. doi:10.1016/j.cell.2026.08.015",
+ "derivation": "Summary statistic derived from the MaleCNS v1.0 flat-connectome tables: the number of distinct glomeruli presynaptic to each Kenyon cell, reduced to a histogram. The wiring cannot be reconstructed from it. Regenerate with bench/benchmark_claw_degrees.py's source circuit, extracted by flypaper.brain.extract.",
+ "source": "MaleCNS v1.0, right hemisphere olfactory circuit",
+ "n_kc_measured": 2045,
+ "n_kc_with_claws": 1891,
+ "mean_claws": 5.3802,
+ "histogram": {
+  "1": 39,
+  "2": 76,
+  "3": 169,
+  "4": 346,
+  "5": 395,
+  "6": 358,
+  "7": 255,
+  "8": 161,
+  "9": 60,
+  "10": 19,
+  "11": 7,
+  "12": 5,
+  "29": 1
+ }
+}

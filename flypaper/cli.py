@@ -86,10 +86,12 @@ def cmd_rank(args: argparse.Namespace) -> int:
         "decay_halflife": args.decay_halflife,
     }
     if args.per != "none":
-        if args.projection != "random":
-            raise SystemExit("--per needs the random projection; drop --projection connectome")
+        if args.projection == "connectome":
+            raise SystemExit(
+                "--per shares one projection across partitions and cannot use the "
+                "connectome; drop --projection connectome, or drop --per"
+            )
         kwargs.pop("circuit_path")
-        kwargs.pop("projection")
 
     if args.baseline:
         return _rank_with_baseline(args, source, kwargs)
@@ -536,12 +538,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ranker.add_argument(
         "--projection",
-        choices=("random", "connectome"),
+        choices=("random", "degree-sampled", "connectome"),
         default="random",
         help=(
-            "random is the published FlyHash baseline and the default; connectome uses the "
-            "measured MaleCNS wiring and needs --circuit. M3 found them statistically "
-            "indistinguishable for novelty detection."
+            "random is the published FlyHash baseline and the default. degree-sampled keeps "
+            "random targets but draws each cell's fan-in from the measured claw-count "
+            "histogram, which halved the median worst-hit rank on a surface whose noise is "
+            "several populations and did nothing on surfaces where it is one; it needs no "
+            "download. connectome uses the full measured wiring, needs --circuit and a "
+            "55-channel encoder, and did not beat its own degree-preserving null."
         ),
     )
     ranker.add_argument(

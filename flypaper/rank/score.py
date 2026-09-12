@@ -27,6 +27,8 @@ from flypaper.brain.bloom import FlyBloomFilter
 from flypaper.brain.flyhash import (
     FlyHash,
     connectome_projection,
+    degree_sampled_projection,
+    random_matched_projection,
     random_projection,
 )
 from flypaper.encode import CHANNEL_SET_VERSION, Encoder
@@ -41,6 +43,11 @@ __all__ = [
     "partition_key",
     "rank",
 ]
+
+#: The measured circuit projects from a fixed number of glomeruli, so a channel set that is
+#: not exactly that wide cannot be fed to it at all. Said once, here, because the error is
+#: otherwise a bare integer mismatch with no route to the fix.
+GLOMERULAR_HINT = "Use channel_set='v4-glomerular', which is sized to the circuit."
 
 #: Defaults, each traceable to a paper or a measurement. See bench/thresholds.yaml.
 DEFAULTS = {
@@ -189,24 +196,34 @@ class Ranker:
         self.encoder = Encoder(self.channel_set)
         rng = np.random.default_rng(self.seed)
 
-        if self.projection == "connectome":
+        if self.projection in ("connectome", "random-matched"):
             from flypaper.brain.extract import Circuit
 
             if not self.circuit_path:
                 raise ValueError(
-                    "projection='connectome' needs circuit_path, produced by "
+                    f"projection={self.projection!r} needs circuit_path, produced by "
                     "flypaper.brain.extract.extract(...).save(...)"
                 )
             circuit = Circuit.load(self.circuit_path)
             if circuit.n_channels != len(self.encoder):
                 raise ValueError(
                     f"channel set {self.channel_set} has {len(self.encoder)} channels but the "
-                    f"circuit has {circuit.n_channels} receptor channels; they must match"
+                    f"circuit has {circuit.n_channels} receptor channels; they must match. "
+                    f"{GLOMERULAR_HINT}"
                 )
-            matrix = connectome_projection(circuit.pn_to_kc, binary=True)
+            matrix = (
+                connectome_projection(circuit.pn_to_kc, binary=True)
+                if self.projection == "connectome"
+                # The degree-preserving null: same number of claws per Kenyon cell as the
+                # measured wiring, rewired at random. A difference against plain `random` is
+                # the degree distribution; a difference against this one is the wiring.
+                else random_matched_projection(circuit.pn_to_kc, rng=rng)
+            )
             self.n_kc = circuit.n_kc
         elif self.projection == "random":
             matrix = random_projection(len(self.encoder), self.n_kc, self.fan_in, rng=rng)
+        elif self.projection == "degree-sampled":
+            matrix = degree_sampled_projection(len(self.encoder), self.n_kc, rng=rng)
         else:
             raise ValueError(f"unknown projection {self.projection!r}")
 
@@ -337,17 +354,20 @@ class PartitionedRanker:
             raise ValueError(
                 f"unknown partition {self.how!r}; known: {', '.join(sorted(PARTITIONS))}"
             )
-        if self.projection != "random":
+        if self.projection not in ("random", "degree-sampled"):
             raise ValueError(
-                "partitioned ranking shares one projection across partitions, so only the "
-                "random projection is supported; use Ranker for the connectome path"
+                f"partitioned ranking shares one projection across every partition, so it "
+                f"cannot use {self.projection!r}, which is built from a loaded circuit; use "
+                f"Ranker for that path. 'random' and 'degree-sampled' are supported."
             )
         probe = Encoder(self.channel_set)
         rng = np.random.default_rng(self.seed)
-        self.flyhash = FlyHash(
-            random_projection(len(probe), self.n_kc, self.fan_in, rng=rng),
-            sparsity=self.sparsity,
+        matrix = (
+            degree_sampled_projection(len(probe), self.n_kc, rng=rng)
+            if self.projection == "degree-sampled"
+            else random_projection(len(probe), self.n_kc, self.fan_in, rng=rng)
         )
+        self.flyhash = FlyHash(matrix, sparsity=self.sparsity)
 
     @property
     def partitions(self) -> int:
