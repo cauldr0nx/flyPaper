@@ -57,6 +57,97 @@ def _log_line(index: int, result: FfufResult, novelty: float, shown: bool) -> st
     )
 
 
+class Recorder:
+    """Scores responses one at a time and builds the frame the dashboard draws for each.
+
+    Pulled out of `record` so a live scan can drive the same scoring, produce the same
+    frames and reuse the page's renderer unchanged. Batch replay is then this fed from a
+    list, which is what keeps the two paths from drifting apart.
+    """
+
+    def __init__(
+        self,
+        *,
+        hits: set[str] | None = None,
+        channel_set: str | None = None,
+        percentile: float = 99.5,
+        warmup: int = 50,
+        label: str = "",
+    ) -> None:
+        self.ranker = Ranker(**({"channel_set": channel_set} if channel_set else {}))
+        self.gate = RollingPercentile(percentile)
+        self.hits = hits or set()
+        self.label = label
+        self.warmup = warmup
+        self.index = 0
+        self.frames: list[dict] = []
+        self.saturation: list[float] = []
+        self.shown_count = 0
+
+    def feed(self, result: FfufResult) -> dict:
+        """Score one response and return its frame. Every response is scored."""
+        ranker = self.ranker
+        # `Ranker.score`, step by step, so the tag it used can be kept. Calling it and then
+        # re-encoding to recover the tag would encode the response twice: the second pass
+        # sees running statistics that already include the response, so the cells the page
+        # lit were not quite the cells the filter read, and every later score was computed
+        # against a baseline that had counted this response twice.
+        when = time.time() if ranker.time_base == "wallclock" else None
+        vector = ranker.encoder.encode(result)
+        tag = ranker.flyhash.tag_valued(vector[None, :])
+        novelty = float(ranker.filter.observe(tag, when=when)[0])
+        active = np.flatnonzero(tag[0]).astype(int).tolist()
+        # After the depression this response caused, which is the state the page draws next.
+        weights = ranker.filter.weights[active]
+
+        shown = False
+        if self.index >= self.warmup:
+            self.gate.observe(novelty)
+            shown = self.gate.passes(novelty)
+        if shown:
+            self.shown_count += 1
+
+        frame = {
+            "i": self.index,
+            "n": round(float(novelty), 5),
+            "kc": active,
+            "wq": _quantise_weights(weights),
+            "w": result.word,
+            "s": result.status,
+            "len": result.length,
+            "wd": result.words,
+            "ln": result.lines,
+            "ms": round(result.duration_ms, 2),
+            "hit": result.word in self.hits,
+            "shown": bool(shown),
+            "log": _log_line(self.index, result, novelty, shown),
+        }
+        self.index += 1
+        return frame
+
+    def keep(self, frame: dict) -> None:
+        self.frames.append(frame)
+        self.saturation.append(round(self.ranker.saturation, 5))
+
+    def payload(self, *, total: int | None = None) -> dict:
+        ranker = self.ranker
+        return {
+            "label": self.label,
+            "channel_set": ranker.channel_set,
+            "projection": ranker.projection,
+            "n_kc": int(ranker.flyhash.n_kc),
+            "n_active": int(ranker.flyhash.n_active),
+            "sparsity": ranker.sparsity,
+            "total_responses": self.index if total is None else total,
+            "frames": self.frames,
+            "saturation": self.saturation,
+            "weights": [round(float(w), 4) for w in ranker.filter.weights],
+            "hits": sorted(self.hits),
+            "shown_count": self.shown_count,
+            "provenance": provenance(),
+        }
+
+
 def record(
     results: list[FfufResult],
     *,
@@ -78,71 +169,16 @@ def record(
     were captured, but a cell depressed only during a skipped response keeps its last
     reported value until it is next seen.
     """
-    hits = hits or set()
-    kwargs = {"channel_set": channel_set} if channel_set else {}
-    ranker = Ranker(**kwargs)
-    gate = RollingPercentile(percentile)
-
-    frames: list[dict] = []
-    saturation: list[float] = []
+    rec = Recorder(
+        hits=hits, channel_set=channel_set, percentile=percentile, warmup=warmup, label=label
+    )
     stride = max(1, len(results) // max_frames)
-
     for index, result in enumerate(results):
-        # `Ranker.score`, step by step, so the tag it used can be kept. Calling it and then
-        # re-encoding to recover the tag would encode the response twice: the second pass
-        # sees running statistics that already include the response, so the cells the page
-        # lit were not quite the cells the filter read, and every later score was computed
-        # against a baseline that had counted this response twice.
-        when = time.time() if ranker.time_base == "wallclock" else None
-        vector = ranker.encoder.encode(result)
-        tag = ranker.flyhash.tag_valued(vector[None, :])
-        novelty = float(ranker.filter.observe(tag, when=when)[0])
-        active = np.flatnonzero(tag[0]).astype(int).tolist()
-        # After the depression this response caused, which is the state the page draws next.
-        weights = ranker.filter.weights[active]
-
-        shown = False
-        if index >= warmup:
-            gate.observe(novelty)
-            shown = gate.passes(novelty)
-
-        if index % stride and not shown:
+        frame = rec.feed(result)
+        if index % stride and not frame["shown"]:
             continue
-
-        frames.append(
-            {
-                "i": index,
-                "n": round(float(novelty), 5),
-                "kc": active,
-                "wq": _quantise_weights(weights),
-                "w": result.word,
-                "s": result.status,
-                "len": result.length,
-                "wd": result.words,
-                "ln": result.lines,
-                "ms": round(result.duration_ms, 2),
-                "hit": result.word in hits,
-                "shown": bool(shown),
-                "log": _log_line(index, result, novelty, shown),
-            }
-        )
-        saturation.append(round(ranker.saturation, 5))
-
-    return {
-        "label": label,
-        "channel_set": ranker.channel_set,
-        "projection": ranker.projection,
-        "n_kc": int(ranker.flyhash.n_kc),
-        "n_active": int(ranker.flyhash.n_active),
-        "sparsity": ranker.sparsity,
-        "total_responses": len(results),
-        "frames": frames,
-        "saturation": saturation,
-        "weights": [round(float(w), 4) for w in ranker.filter.weights],
-        "hits": sorted(hits),
-        "shown_count": sum(1 for f in frames if f["shown"]),
-        "provenance": provenance(),
-    }
+        rec.keep(frame)
+    return rec.payload(total=len(results))
 
 
 def main() -> None:

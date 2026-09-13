@@ -72,7 +72,18 @@ one the target already had is not flagged. That is right for monitoring at scale
 if what you wanted was a URL diff.
 
 The dashboard above is `python -m flypaper.web.export` then
-`python -m flypaper.web.server`, and needs the MaleCNS tables for its geometry.
+`python -m flypaper.web.server`, and needs the MaleCNS tables for its geometry. Given a
+scope file and a directory of wordlists it can also start a scan and rank it as it arrives:
+
+```bash
+python -m flypaper.web.server --scope scope.txt --wordlist-dir ~/wordlists
+```
+
+This is the only place flypaper initiates a request. Everything deciding *what may be
+scanned* is fixed before the browser exists — the scope file and the wordlist directory are
+named on that command line, the rate ceiling is in the code, and ffuf is run as an argv list
+rather than through a shell. The page can pick from those; it cannot widen them. Without
+both flags the dashboard replays and ranks and cannot scan at all.
 
 Every claim this project makes is produced by a benchmark in `bench/` into a report in
 `reports/`, including the ones that came out against it.
@@ -98,11 +109,23 @@ review queue. A human does the reviewing.
 
 ## Authorization
 
-`fly` never initiates a request in stage one — it reads results the operator already
-generated. Stage-two re-fetch (M5) will re-request only URLs already present in the input
+**The `fly` CLI never initiates a request in stage one** — it reads results the operator
+already generated. Stage-two re-fetch re-requests only URLs already present in the input
 stream, under a mandatory explicit `--scope` file, rate-limited: no crawling, no guessing,
 no following a redirect to a new host, no implicit same-domain inference, no wildcard
 default. Response bodies are not stored by default.
+
+**The dashboard is the exception, and it is opt-in twice.** Started with `--scope` and
+`--wordlist-dir` it can launch a scan, because a dashboard that can only replay yesterday's
+capture is a viewer rather than an instrument. What the page may choose is bounded by those
+two flags and by a rate ceiling in the code; it cannot name a host outside the scope file, a
+path outside the wordlist directory, or a rate above the ceiling, and ffuf is executed as an
+argv list so a target is never a command. State-changing requests carry a per-process token
+injected into the page, which a site on another origin cannot read — without it, any page
+the operator happened to visit could drive a scanner listening on their loopback interface.
+
+None of that makes it safe to point at a host you are not authorised against. It makes it
+hard to do so by accident, and impossible to do so from the page alone.
 
 ## Licenses
 

@@ -303,6 +303,45 @@ async function main() {
 
   $('live-dot').classList.add('playing');
 
+  /* Live mode.
+   *
+   * A scan produces exactly the frames a replay does - the recorder is the same object on
+   * the server - so live is not a second renderer. It is the same one, with frames arriving
+   * instead of being read from a file, and playback pinned to the end of what has arrived.
+   */
+  window.flypaperLive = {
+    begin(meta) {
+      state.playing = false;
+      run.frames.length = 0;
+      run.saturation.length = 0;
+      run.label = meta.label || 'live';
+      reset(0);
+      $('live-dot').innerHTML = '&#9679; LIVE';
+      $('live-dot').classList.add('playing');
+      $('run-label').textContent = meta.label || 'live scan';
+      desk.setHeader(`flypaper — ${meta.label || 'live'}`);
+      $('foot-prov').textContent = 'live scan · ranked as it arrives';
+    },
+    push(frames, saturation) {
+      for (const frame of frames) {
+        run.frames.push(frame);
+        run.saturation.push(saturation);
+        renderFrame(run.frames.length - 1);
+      }
+      state.frame = run.frames.length;
+      scrubEl.max = String(Math.max(0, run.frames.length - 1));
+      scrubEl.value = scrubEl.max;
+      $('ax-r').textContent = `${run.frames.length}`;
+      $('scrub-label').textContent = `${run.frames.length} / ${run.frames.length}`;
+    },
+    end(summary) {
+      $('live-dot').innerHTML = '&#9679; DONE';
+      $('live-dot').classList.remove('playing');
+      $('foot-prov').textContent = summary || 'scan finished';
+    },
+  };
+  window.dispatchEvent(new Event('flypaper-ready'));
+
   let last = performance.now();
   function tick(now) {
     const dt = (now - last) / 1000;

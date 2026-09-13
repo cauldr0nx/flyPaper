@@ -48,7 +48,7 @@ body {
   height: 100vh;
   height: 100dvh;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
   background-image:
     radial-gradient(1200px 600px at 15% -10%, #0b1119 0%, transparent 60%),
@@ -362,4 +362,55 @@ h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.01em; white
   /* Onto its own line rather than out of the page: what the tool does and does not claim
    * is not the part to drop when the screen gets small. */
   .foot { margin-left: 0; width: 100%; gap: 4px 12px; font-size: 9.5px; }
+}
+
+
+/* ─── scan control ────────────────────────────────────────────────────────
+   A slim strip under the topbar, collapsed by default. Collapsed because the
+   page is a one-screen layout and a scan is an occasional act, not the thing
+   you stare at; the strip still says whether scanning is configured at all. */
+.scanbar {
+  border-bottom: 1px solid var(--rule);
+  background: var(--panel);
+  padding: 6px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.scanbar-toggle { flex: 0 0 auto; }
+.scanbar-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.scanbar-body[hidden] { display: none; }
+.scan-field { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.scan-field .k { color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+.scan-field input[type="text"] {
+  flex: 1 1 260px;
+  min-width: 160px;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  color: var(--ink);
+  padding: 4px 7px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.scan-field.narrow input { width: 62px; background: var(--bg); border: 1px solid var(--rule);
+  color: var(--ink); padding: 4px 6px; border-radius: 3px; font-size: 12px; }
+.scan-field input:focus, .scan-field select:focus { outline: 1px solid var(--cyan); }
+.btn.primary { border-color: var(--cyan); color: var(--cyan); }
+.btn.primary:disabled { opacity: .45; }
+.scan-status { flex: 1 1 auto; min-width: 0; }
+.scan-status.bad { color: var(--hit); }
+.scan-note { flex: 1 0 100%; margin: 0; font-size: 11px; }
+
+@media (max-width: 900px) {
+  .scanbar { position: sticky; top: 0; z-index: 5; }
+  .scan-field input[type="text"] { flex: 1 1 100%; }
 }

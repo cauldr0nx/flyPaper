@@ -21,6 +21,29 @@
   </nav>
 </header>
 
+<!-- ─── scan control: the one place the tool initiates a request ──────────── -->
+<section class="scanbar" id="scanbar">
+  <button class="btn scanbar-toggle" id="scan-toggle" aria-expanded="false">&#9658; scan</button>
+  <div class="scanbar-body" id="scan-body" hidden>
+    <label class="scan-field">
+      <span class="k">target</span>
+      <input type="text" id="scan-target" class="mono" placeholder="https://host/FUZZ" spellcheck="false">
+    </label>
+    <label class="scan-field">
+      <span class="k">wordlist</span>
+      <select id="scan-wordlist" class="select mono"></select>
+    </label>
+    <label class="scan-field narrow">
+      <span class="k">rate</span>
+      <input type="number" id="scan-rate" class="mono" value="20" min="1">
+    </label>
+    <button class="btn primary" id="scan-start">start</button>
+    <button class="btn" id="scan-stop" disabled>stop</button>
+    <span class="scan-status mono dim" id="scan-status">&mdash;</span>
+  </div>
+  <p class="scan-note mono dim" id="scan-scope">&mdash;</p>
+</section>
+
 <main class="frame">
   <span class="corner tl"></span><span class="corner tr"></span>
   <span class="corner bl"></span><span class="corner br"></span>
@@ -176,5 +199,6 @@
 </div>
 
 <script type="module" src="app.js"></script>
+<script type="module" src="scan.js"></script>
 </body>
 </html>

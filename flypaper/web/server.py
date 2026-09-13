@@ -8,7 +8,16 @@ Standard library only, no web framework, and the page loads a locally vendored t
 the dashboard works with no internet connection. It serves static files and one endpoint
 that re-records a run on demand.
 
-Nothing here initiates a request against a target. It reads corpora already on disk.
+It also starts scans, which is the one place in flypaper that initiates a request against
+a target. Everything deciding *what may be scanned* is fixed before the browser is involved
+- see `flypaper/web/scan.py` - and the state-changing endpoints are guarded two ways:
+
+  a per-process token, printed at startup and embedded in the page, required on every POST.
+  A page on another origin cannot read it, so it cannot forge the request.
+
+  an Origin check, because a browser attaches Origin to cross-site POSTs. Together these
+  stop a random site the operator happens to visit from driving a scanner listening on
+  their loopback interface.
 
 `--tailscale` binds to all interfaces and runs `tailscale serve` so the page is reachable
 from the operator's other devices over the tailnet, on HTTPS, without exposing it to the
@@ -20,6 +29,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import secrets
 import subprocess
 import sys
 import threading
@@ -30,6 +40,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from flypaper import REPO_ROOT
+from flypaper.web.scan import MAX_RATE, ScanManager, ScanRefused
 
 STATIC = Path(__file__).resolve().parent / "static"
 CORPUS = REPO_ROOT / "bench" / "corpus"
@@ -67,6 +78,30 @@ def record_run(surface: str) -> str:
 
     payload = record(list(iter_batch(path)), hits=hits, label=surface)
     return json.dumps(payload, separators=(",", ":"))
+
+
+#: Set by `main`. The handler is constructed per request by http.server, so the scan
+#: manager and the token have to live beside the class rather than on it.
+SCANS: ScanManager | None = None
+TOKEN = ""
+
+
+def _authorised(handler) -> bool:
+    """A POST must carry this process's token and must not come from another origin.
+
+    The token is the control that matters: a cross-origin page cannot read the dashboard's
+    HTML, so it cannot learn the token, so it cannot forge a scan. The Origin check is
+    belt and braces for the same threat - a site the operator visits while the dashboard
+    is listening on loopback.
+    """
+    if not TOKEN or handler.headers.get("X-Flypaper-Token") != TOKEN:
+        return False
+    origin = handler.headers.get("Origin")
+    if origin:
+        host = handler.headers.get("Host", "")
+        if urlparse(origin).netloc != host:
+            return False
+    return True
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -107,11 +142,78 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path not in ("/api/scan/start", "/api/scan/stop"):
+            self.send_error(404)
+            return
+        if SCANS is None:
+            self.send_error(503, "scanning is not configured")
+            return
+        if not _authorised(self):
+            # Deliberately terse: the page knows what went wrong, and an attacker probing
+            # this endpoint learns nothing from the wording.
+            self.send_error(403, "missing or invalid token")
+            return
+        try:
+            length = min(int(self.headers.get("Content-Length") or 0), 64_000)
+            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except ValueError:
+            self.send_error(400, "expected a JSON body")
+            return
+
+        if parsed.path == "/api/scan/stop":
+            SCANS.stop()
+            self._send(json.dumps(SCANS.status(0)).encode(), "application/json")
+            return
+
+        try:
+            SCANS.start(
+                str(body.get("target", "")),
+                str(body.get("wordlist", "")),
+                int(body.get("rate", 20) or 20),
+            )
+        except ScanRefused as exc:
+            self._send(json.dumps({"refused": str(exc)}).encode(), "application/json")
+            return
+        except (TypeError, ValueError) as exc:
+            self._send(json.dumps({"refused": f"bad request: {exc}"}).encode(), "application/json")
+            return
+        self._send(json.dumps(SCANS.status(0)).encode(), "application/json")
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
 
         if parsed.path == "/api/runs":
             self._send(json.dumps({"runs": available_runs()}).encode(), "application/json")
+            return
+
+        if parsed.path == "/api/scan/ready":
+            ready, why = SCANS.ready() if SCANS else (False, "scanning is not configured")
+            self._send(
+                json.dumps(
+                    {
+                        "ready": ready,
+                        "why": why,
+                        "hosts": SCANS.scope_hosts() if SCANS else [],
+                        "wordlists": SCANS.wordlists() if SCANS else [],
+                        "max_rate": MAX_RATE,
+                    }
+                ).encode(),
+                "application/json",
+            )
+            return
+
+        if parsed.path == "/api/scan/status":
+            if not SCANS:
+                self.send_error(503, "scanning is not configured")
+                return
+            since = parse_qs(parsed.query).get("since", ["0"])[0]
+            try:
+                offset = max(0, int(since))
+            except ValueError:
+                offset = 0
+            self._send(json.dumps(SCANS.status(offset)).encode(), "application/json")
             return
 
         if parsed.path == "/api/run":
@@ -137,7 +239,17 @@ class Handler(SimpleHTTPRequestHandler):
                 ".css": "text/css",
                 ".html": "text/html; charset=utf-8",
             }
-            self._send(target.read_bytes(), types[target.suffix])
+            body = target.read_bytes()
+            if target.name == "index.html":
+                # The page needs this process's token to POST. Injected rather than stored
+                # in a file, so it is per-process and never on disk, and delivered inside
+                # the HTML, which the same-origin policy stops another site from reading.
+                body = body.replace(
+                    b"</head>",
+                    f'<script>window.FLYPAPER_TOKEN="{TOKEN}";</script></head>'.encode(),
+                    1,
+                )
+            self._send(body, types[target.suffix])
             return
         super().do_GET()
 
@@ -212,7 +324,34 @@ def main() -> int:
         ),
     )
     ap.add_argument("--open", action="store_true", help="open a browser on this machine")
+    ap.add_argument(
+        "--scope",
+        default=None,
+        help=(
+            "a scope file of explicit host patterns. Without it the dashboard can replay "
+            "and rank but cannot start a scan: there is deliberately no default scope and "
+            "no same-domain inference. See `fly scope`."
+        ),
+    )
+    ap.add_argument(
+        "--wordlist-dir",
+        default=None,
+        help=(
+            "a directory of wordlists the page may choose from, by basename. Without it "
+            "the dashboard cannot start a scan. The page can never name a path: an "
+            "arbitrary path would make ffuf request each of its lines and render them."
+        ),
+    )
     args = ap.parse_args()
+
+    global SCANS, TOKEN
+    scope = None
+    if args.scope:
+        from flypaper.stage2.scope import Scope
+
+        scope = Scope.from_file(args.scope)
+    SCANS = ScanManager(scope, Path(args.wordlist_dir) if args.wordlist_dir else None)
+    TOKEN = secrets.token_urlsafe(32)
 
     runs = available_runs()
     if not (STATIC / "run.json").exists():
