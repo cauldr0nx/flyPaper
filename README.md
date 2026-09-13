@@ -87,9 +87,17 @@ both flags the dashboard replays and ranks and cannot scan at all.
 
 Every claim this project makes is produced by a benchmark in `bench/` into a report in
 `reports/`, including the ones that came out against it — and most of the connectome ones
-did. The latest is [reports/readout.md](reports/readout.md): the measured MBON-α′3 reads
-345 of 2,045 Kenyon cells, and a filter that small is worse at this job than the published
-one that reads all of them.
+did. [reports/readout.md](reports/readout.md): the measured MBON-α′3 reads 345 of 2,045
+Kenyon cells, and a filter that small is worse at this job than the published one that
+reads all of them.
+
+**flypaper no longer uses the fly's number of Kenyon cells.** 2,045 is a fact about a fly's
+anatomy, not about content discovery, and the worst labelled response's rank falls
+monotonically as the layer grows — on every surface with any headroom, independently on
+each (pooled Spearman ρ=−0.40, p=3e-12). The default is 8,192, which costs 64 kB per
+baseline and about 2,600 responses a second. `--projection connectome` cannot follow: the
+wiring is a measurement, so it has exactly as many cells as the fly had.
+[reports/capacity.md](reports/capacity.md).
 
 ## Known limitations
 

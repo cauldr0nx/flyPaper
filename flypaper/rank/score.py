@@ -51,8 +51,21 @@ __all__ = [
 GLOMERULAR_HINT = "Use channel_set='v4-glomerular', which is sized to the circuit."
 
 #: Defaults, each traceable to a paper or a measurement. See bench/thresholds.yaml.
+#: Kenyon cells in the measured circuit, MaleCNS right hemisphere. Kept as a named constant
+#: because it is a fact about a fly and several benchmarks compare against it - but it is no
+#: longer the default, and `reports/capacity.md` is why.
+MEASURED_N_KC = 2045
+
 DEFAULTS = {
-    "n_kc": 2045,  # measured: Kenyon cells, MaleCNS right hemisphere
+    # Not the fly's 2,045. The worst labelled response's rank falls monotonically as the
+    # layer grows, on every surface with any headroom and independently on each of them
+    # (pooled Spearman rho=-0.40, p=3e-12), and 8,192 is the best size measured on both
+    # surfaces that discriminate. 2,045 is a fact about a fly's anatomy, not about content
+    # discovery: a fly grades novelty over the odours of a life, and a scan asks the same
+    # filter to keep two thousand response shapes apart in under a minute. The cost of the
+    # larger layer is 64 kB per baseline and about 2,600 responses a second, far above any
+    # rate a polite scan runs at. See reports/capacity.md.
+    "n_kc": 8192,
     "fan_in": 6,  # published: Dasgupta, Stevens & Navlakha 2017
     "sparsity": 0.05,  # published: ~95% of the tag is zero
     "learning_rate": 0.4,

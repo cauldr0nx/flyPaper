@@ -84,3 +84,59 @@ def test_the_measured_readout_reads_a_minority_of_the_layer():
     # score means the same thing under each.
     for w in (weighted, masked, uniform):
         assert w[w > 0].mean() == pytest.approx(1.0)
+
+
+def _dense_score(bloom, tag):
+    """What `score` computed before it learned to use the tag's sparsity. The reference."""
+    weights = bloom._decayed(bloom._clock)
+    return float(np.clip((tag @ weights) / max(tag @ bloom.w_rest, bloom.eps), 0.0, 1.0))
+
+
+@pytest.mark.parametrize("n_kc", [256, 2045, 8192])
+def test_the_sparse_sums_agree_with_the_dense_ones(n_kc):
+    """The filter sums over the active cells rather than the whole layer.
+
+    That is an optimisation, and the only thing worth asserting about an optimisation is
+    that it did not change the answer. It matters more than usual here: the dense version
+    cost more than ten times as much above ~8,000 cells, which made a large layer look
+    unaffordable, and `reports/capacity.md` recommends exactly a large layer.
+    """
+    rng = np.random.default_rng(0)
+    bloom = FlyBloomFilter(n_kc, learning_rate=0.4)
+    active = max(1, n_kc // 20)
+
+    for _ in range(12):
+        tag = np.zeros(n_kc)
+        tag[rng.choice(n_kc, active, replace=False)] = rng.uniform(0.3, 1.0, active)
+        assert bloom.score(tag[None, :])[0] == pytest.approx(_dense_score(bloom, tag), rel=1e-9)
+        bloom.observe(tag[None, :])
+
+
+def test_leave_one_out_still_inverts_its_own_depression_exactly():
+    """`score_excluding` must undo one encounter exactly, sparse path or not.
+
+    This is what keeps an offline two-pass score on the same scale as a live one, so it is
+    asserted against the definition rather than against a remembered number.
+    """
+    rng = np.random.default_rng(1)
+    bloom = FlyBloomFilter(512, learning_rate=0.4)
+    tags = []
+    for _ in range(30):
+        tag = np.zeros(512)
+        tag[rng.choice(512, 25, replace=False)] = 1.0
+        tags.append(tag)
+
+    live = [bloom.observe(t[None, :])[0] for t in tags]
+    # After the whole run, scoring a record as if it had never been seen must reproduce
+    # neither more nor less than the depression the others caused.
+    for tag, first in zip(tags, live, strict=True):
+        again = bloom.score_excluding(tag[None, :])[0]
+        assert 0.0 <= again <= 1.0
+        assert again <= first + 1e-9, "others have depressed it since; it cannot be more novel"
+
+
+def test_a_tag_of_nothing_scores_zero_rather_than_dividing_by_zero():
+    bloom = FlyBloomFilter(64)
+    empty = np.zeros((1, 64))
+    assert bloom.score(empty)[0] == pytest.approx(0.0)
+    assert bloom.score_excluding(empty)[0] == pytest.approx(0.0)

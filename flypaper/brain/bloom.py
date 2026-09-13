@@ -106,10 +106,21 @@ class FlyBloomFilter:
         """
         tag = np.atleast_2d(np.asarray(tag, dtype=np.float64))
         weights = self._decayed(when if when is not None else self._clock)
-        driven = tag @ weights
-        # Normalise by what a completely unfamiliar tag of the same shape would drive, so
-        # the score does not depend on how many cells happen to be active.
-        ceiling = tag @ self.w_rest
+        # Only the winners are non-zero - 5% of the layer - so the sums run over those and
+        # not over the whole of it. A dense `tag @ weights` spends 95% of its work on zeros,
+        # and above about 8,000 cells numpy leaves its fast path for small operands and the
+        # cost jumps by more than an order of magnitude for a doubling of size. Which makes
+        # a large layer look unaffordable when it is not: the layer is not what costs, the
+        # dense multiply over it is.
+        driven = np.empty(len(tag), dtype=np.float64)
+        ceiling = np.empty(len(tag), dtype=np.float64)
+        for i, row in enumerate(tag):
+            idx = np.flatnonzero(row)
+            values = row[idx]
+            driven[i] = values @ weights[idx]
+            # Normalise by what a completely unfamiliar tag of the same shape would drive,
+            # so the score does not depend on how many cells happen to be active.
+            ceiling[i] = values @ self.w_rest[idx]
         return np.clip(driven / np.maximum(ceiling, self.eps), 0.0, 1.0)
 
     def score_excluding(self, tag: np.ndarray, *, when: float | None = None) -> np.ndarray:
@@ -132,17 +143,19 @@ class FlyBloomFilter:
         weights = self._decayed(now)
         out = np.empty(len(tag), dtype=np.float64)
         for i, row in enumerate(tag):
-            active = row > 0
-            restored = weights
-            if active.any():
-                strength = row[active]
-                strength = strength / max(strength.max(), self.eps)
-                factor = 1.0 - self.learning_rate * strength
-                restored = weights.copy()
-                restored[active] /= np.maximum(factor, self.eps)
-                restored = np.minimum(restored, self.w_rest)
-            driven = float(row @ restored)
-            ceiling = float(row @ self.w_rest)
+            # Only the active cells matter: an inactive one contributes nothing to either
+            # sum whatever its weight, so restoring it is arithmetic nobody reads. The dense
+            # version copied the whole weight vector per row to restore 5% of it.
+            idx = np.flatnonzero(row)
+            if idx.size == 0:
+                out[i] = 0.0
+                continue
+            values = row[idx]
+            strength = values / max(values.max(), self.eps)
+            factor = np.maximum(1.0 - self.learning_rate * strength, self.eps)
+            restored = np.minimum(weights[idx] / factor, self.w_rest[idx])
+            driven = float(values @ restored)
+            ceiling = float(values @ self.w_rest[idx])
             out[i] = min(max(driven / max(ceiling, self.eps), 0.0), 1.0)
         return out
 
