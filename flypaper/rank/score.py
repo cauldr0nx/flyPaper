@@ -207,6 +207,12 @@ class Ranker:
     decay_halflife: float | None = None
     seed: int = 0
     circuit_path: str | None = None
+    #: How Kenyon cells reach the novelty readout. "uniform" is the published filter, where
+    #: every cell weighs the same. "mask" and "weighted" use the measured KC -> MBON-alpha'3
+    #: synapses instead, and both need `circuit_path`. The projection and the readout are
+    #: independent choices: this can be measured while the projection stays random, which
+    #: is the only way to attribute anything to it.
+    readout: str = "uniform"
     #: How "time" is counted for temporal decay. "records" is right within one scan, where
     #: elapsed time is how much else has gone past. "wallclock" is right across scans, and
     #: is required for a persisted baseline: a baseline saved six months ago should be six
@@ -260,9 +266,29 @@ class Ranker:
         self.flyhash = FlyHash(matrix, sparsity=self.sparsity)
         self.filter = FlyBloomFilter(
             self.flyhash.n_kc,
+            w_rest=self._readout_weights(),
             learning_rate=self.learning_rate,
             decay_halflife=self.decay_halflife,
         )
+
+    def _readout_weights(self):
+        """The resting weight of each Kenyon cell onto the readout."""
+        if self.readout == "uniform":
+            return 1.0
+        from flypaper.brain.extract import Circuit, readout_weights
+
+        if not self.circuit_path:
+            raise ValueError(
+                f"readout={self.readout!r} needs circuit_path: the weights are measured, "
+                f"not assumed. Use readout='uniform' for the published filter."
+            )
+        circuit = Circuit.load(self.circuit_path)
+        if circuit.n_kc != self.flyhash.n_kc:
+            raise ValueError(
+                f"the circuit has {circuit.n_kc} Kenyon cells and the projection produces "
+                f"{self.flyhash.n_kc}; a readout weight has to belong to a cell"
+            )
+        return readout_weights(circuit, mode=self.readout)
 
     @property
     def saturation(self) -> float:

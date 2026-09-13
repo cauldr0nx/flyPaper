@@ -177,6 +177,53 @@ def _edges_between(weights: pd.DataFrame, pre: np.ndarray, post: np.ndarray) -> 
     return weights[mask]
 
 
+def readout_weights(circuit: Circuit, *, mode: str = "weighted") -> np.ndarray:
+    """Resting weight per Kenyon cell, from the measured KC -> MBON-alpha'3 synapses.
+
+    The published Fly Bloom Filter gives every Kenyon cell the same weight onto the novelty
+    readout, exactly as it gives every cell the same fan-in. The measurement disagrees more
+    sharply here than it did there: of 2,045 Kenyon cells, **345 synapse onto MBON-alpha'3
+    at all** and 1,700 do not. That is not a small correction to a weight - it says the
+    readout reads a sixth of the layer.
+
+    It is also the expected anatomy rather than a surprise. The alpha'3 compartment is
+    innervated by alpha'/beta' Kenyon cells, and our cell set is every Kenyon cell on the
+    hemisphere, so most of them belong to lobes this MBON never visits.
+
+    `mode`:
+      `weighted`  weight proportional to measured synapse count, mean-normalised so the
+                  filter's overall scale matches the uniform one and the two are comparable.
+      `mask`      every connected cell weighted equally, unconnected cells at zero. Isolates
+                  *which* cells are read from *how strongly*.
+      `uniform`   the published baseline, for symmetry.
+
+    An unconnected cell keeps a weight of zero, so it can be active in a tag and contribute
+    nothing to novelty - which is what "does not synapse onto the readout" means.
+    """
+    n_kc = circuit.kc_to_mbon.shape[0]
+    if mode == "uniform":
+        return np.ones(n_kc, dtype=np.float64)
+
+    synapses = np.asarray(circuit.kc_to_mbon.sum(axis=1), dtype=np.float64).ravel()
+    connected = synapses > 0
+    if not connected.any():
+        raise ValueError("no Kenyon cell reaches the readout; the circuit looks wrong")
+
+    if mode == "mask":
+        out = connected.astype(np.float64)
+    elif mode == "weighted":
+        out = synapses.copy()
+    else:
+        raise ValueError(f"unknown readout mode {mode!r}")
+
+    # Normalise to a mean of 1 over the *connected* cells, so `weighted` and `mask` and
+    # `uniform` put the filter on one scale and a novelty score means the same thing in all
+    # three. Without this the comparison would be measuring the arbitrary size of a synapse
+    # count against the arbitrary choice of 1.0.
+    out[connected] /= out[connected].mean()
+    return out
+
+
 def extract(side: str = "R", *, weights: pd.DataFrame | None = None) -> Circuit:
     """Build the measured circuit for one hemisphere.
 

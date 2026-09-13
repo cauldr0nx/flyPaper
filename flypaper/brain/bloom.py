@@ -45,7 +45,11 @@ class FlyBloomFilter:
     """
 
     n_kc: int
-    w_rest: float = 1.0
+    #: Resting weight per Kenyon cell. A scalar reproduces the published filter, where every
+    #: cell reaches the readout equally. An array is the measured alternative: MBON-alpha'3
+    #: does not read all 2,045 Kenyon cells, it reads 345 of them, through synapse counts
+    #: that vary sixfold. See `readout_weights` in `flypaper.brain.extract`.
+    w_rest: float | np.ndarray = 1.0
     #: How much a single encounter depresses an active synapse, as a fraction of its
     #: current weight. The paper's depression is proportional to activation; this is the
     #: same rule with the activation folded into `observe`.
@@ -60,7 +64,15 @@ class FlyBloomFilter:
     _clock: float = field(init=False, default=0.0)
 
     def __post_init__(self) -> None:
-        self.weights = np.full(self.n_kc, float(self.w_rest), dtype=np.float64)
+        if np.isscalar(self.w_rest):
+            self.w_rest = np.full(self.n_kc, float(self.w_rest), dtype=np.float64)
+        else:
+            self.w_rest = np.asarray(self.w_rest, dtype=np.float64)
+            if self.w_rest.shape != (self.n_kc,):
+                raise ValueError(
+                    f"w_rest has {self.w_rest.shape} weights for {self.n_kc} Kenyon cells"
+                )
+        self.weights = self.w_rest.copy()
         self.last_seen = np.zeros(self.n_kc, dtype=np.float64)
 
     # --- time ---------------------------------------------------------------------------
@@ -97,7 +109,7 @@ class FlyBloomFilter:
         driven = tag @ weights
         # Normalise by what a completely unfamiliar tag of the same shape would drive, so
         # the score does not depend on how many cells happen to be active.
-        ceiling = tag.sum(axis=1) * self.w_rest
+        ceiling = tag @ self.w_rest
         return np.clip(driven / np.maximum(ceiling, self.eps), 0.0, 1.0)
 
     def score_excluding(self, tag: np.ndarray, *, when: float | None = None) -> np.ndarray:
@@ -130,7 +142,7 @@ class FlyBloomFilter:
                 restored[active] /= np.maximum(factor, self.eps)
                 restored = np.minimum(restored, self.w_rest)
             driven = float(row @ restored)
-            ceiling = float(row.sum()) * self.w_rest
+            ceiling = float(row @ self.w_rest)
             out[i] = min(max(driven / max(ceiling, self.eps), 0.0), 1.0)
         return out
 
@@ -163,4 +175,5 @@ class FlyBloomFilter:
     def saturation(self) -> float:
         """How much of the filter has been written into. A filter near 1 has forgotten how
         to be surprised, which is the classic Bloom filter failure and worth watching."""
-        return float(1.0 - self.weights.mean() / max(self.w_rest, self.eps))
+        total = float(self.w_rest.sum())
+        return float(1.0 - self.weights.sum() / max(total, self.eps))

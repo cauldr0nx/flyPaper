@@ -86,7 +86,10 @@ rather than through a shell. The page can pick from those; it cannot widen them.
 both flags the dashboard replays and ranks and cannot scan at all.
 
 Every claim this project makes is produced by a benchmark in `bench/` into a report in
-`reports/`, including the ones that came out against it.
+`reports/`, including the ones that came out against it — and most of the connectome ones
+did. The latest is [reports/readout.md](reports/readout.md): the measured MBON-α′3 reads
+345 of 2,045 Kenyon cells, and a filter that small is worse at this job than the published
+one that reads all of them.
 
 ## Known limitations
 
